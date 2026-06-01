@@ -4,4 +4,6 @@ extraction:
   type: section_summary
   group: COGS
 metric: ratio
+higher_is_better: false
+trigger_days: [1, 16]
 email_to: mtbpalmdale@gmail.com

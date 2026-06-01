@@ -1,0 +1,14 @@
+name: "Monthly Business Dashboard"
+subject: "Business Dashboard — {month} {year}"
+type: scorecard
+trigger_days: [1]
+email_to: mtbpalmdale@gmail.com
+includes:
+  - "COGS"
+  - "Gross Profit"
+  - "Net Operating Income"
+  - "Total Operating Expense Ratio"
+  - "Total Payroll Burden"
+  - "Home Office Supplies"
+  - "Payroll Expense Home Office Reimbursement"
+  - "Utilities"

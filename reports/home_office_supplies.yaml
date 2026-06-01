@@ -4,4 +4,6 @@ extraction:
   type: line_item
   account_name: "Home Office Supplies"
 metric: both
+higher_is_better: false
+trigger_days: [1, 16]
 email_to: mtbpalmdale@gmail.com

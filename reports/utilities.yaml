@@ -1,0 +1,9 @@
+name: "Utilities"
+subject: "Utilities — {month} {year}"
+extraction:
+  type: subsection_summary
+  header_text: "Utilities"
+metric: both
+higher_is_better: false
+trigger_days: [1, 16]
+email_to: mtbpalmdale@gmail.com

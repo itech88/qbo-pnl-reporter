@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Business Dashboard — {{ report_month_name }} {{ current_year }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:24px 16px;">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <div style="background:#0f172a;border-radius:8px 8px 0 0;padding:24px 32px;color:#ffffff;">
+    <div style="font-size:11px;opacity:0.55;text-transform:uppercase;letter-spacing:1.2px;">Monthly Overview</div>
+    <div style="font-size:24px;font-weight:700;margin-top:4px;">Business Dashboard</div>
+    <div style="font-size:13px;margin-top:8px;opacity:0.7;">
+      {{ report_month_name }} {{ current_year }} &nbsp;·&nbsp; Generated {{ report_date }}
+    </div>
+
+    <!-- Status key -->
+    <div style="margin-top:18px;display:flex;gap:16px;">
+      <span style="font-size:11px;background:#dcfce7;color:#166534;padding:3px 8px;border-radius:4px;font-weight:600;">ON TRACK</span>
+      <span style="font-size:11px;background:#fef9c3;color:#854d0e;padding:3px 8px;border-radius:4px;font-weight:600;">WATCH</span>
+      <span style="font-size:11px;background:#fee2e2;color:#991b1b;padding:3px 8px;border-radius:4px;font-weight:600;">ACTION</span>
+      <span style="font-size:11px;opacity:0.5;padding:3px 0;font-size:10px;">vs ±{{ threshold_pct }}% threshold</span>
+    </div>
+  </div>
+
+  <!-- ── Body ────────────────────────────────────────────────────────────── -->
+  <div style="background:#ffffff;padding:28px 32px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+
+    <!-- Scorecard table -->
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:28px;">
+      <thead>
+        <tr style="background:#f8fafc;">
+          <th style="text-align:left;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Metric</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">This Month</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">3-Yr Avg</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">vs Avg</th>
+          <th style="text-align:center;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in metrics %}
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:10px 10px;color:#1e293b;font-weight:500;">{{ m.name }}</td>
+          <td style="text-align:right;padding:10px 10px;color:#1e293b;font-weight:700;">
+            {% if m.use_pct and m.current_pct is not none %}
+              {{ (m.current_pct * 100) | round(1) }}%
+            {% elif m.current_abs is not none %}
+              {% if m.current_abs < 0 %}-${{ (m.current_abs * -1) | round(0) | int | format_number }}
+              {% else %}${{ m.current_abs | round(0) | int | format_number }}{% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td style="text-align:right;padding:10px 10px;color:#64748b;">
+            {% if m.avg_3yr is not none %}
+              {% if m.use_pct %}{{ (m.avg_3yr * 100) | round(1) }}%
+              {% else %}
+                {% if m.avg_3yr < 0 %}-${{ (m.avg_3yr * -1) | round(0) | int | format_number }}
+                {% else %}${{ m.avg_3yr | round(0) | int | format_number }}{% endif %}
+              {% endif %}
+            {% else %}—{% endif %}
+          </td>
+          <td style="text-align:right;padding:10px 10px;font-weight:600;color:{{ m.bar_color }};">
+            {{ m.deviation_fmt if m.deviation_fmt is defined else '—' }}
+          </td>
+          <td style="text-align:center;padding:10px 10px;">
+            <span style="background:{{ m.status_bg }};color:{{ m.status_fg }};
+                         padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;
+                         white-space:nowrap;">
+              {{ m.status }}
+            </span>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- Diverging bar chart -->
+    <img src="cid:monthly_chart"
+         alt="Deviation from 3-year average"
+         width="576"
+         style="width:100%;max-width:576px;border-radius:6px;display:block;">
+
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
+              padding:14px 32px;text-align:center;">
+    <div style="font-size:11px;color:#94a3b8;">
+      Status based on ±{{ threshold_pct }}% deviation from 3-year same-month average &nbsp;·&nbsp; {{ report_date }}
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -142,6 +142,54 @@ def flag_anomalies(
     )
 
 
+def current_month_stats(
+    df: pd.DataFrame,
+    metric: str = "ratio",
+    threshold: float = _THRESHOLD,
+) -> dict | None:
+    """
+    Extract key stats for the most recently completed month with income data.
+    Used by the scorecard.
+
+    On the 1st of the month the current month has no data yet, so this
+    correctly falls back to the prior month — the just-completed period
+    the owner actually wants to review.
+    Returns None if no income data exists for the current year.
+    """
+    today        = datetime.now()
+    current_year = today.year
+
+    enriched = df.copy()
+    enriched["value_pct"] = _value_pct(enriched)
+
+    # Most recent month in the current year that has actual income
+    active = enriched[(enriched["year"] == current_year) & (enriched["income"] > 0)]
+    if active.empty:
+        return None
+
+    report_month = int(active["month"].max())
+    cur_row      = active[active["month"] == report_month].iloc[0]
+
+    use_pct    = metric in ("ratio", "both")
+    stat_col   = "value_pct" if use_pct else "value"
+    historical = enriched[enriched["year"] != current_year]
+    avg_3yr    = historical[historical["month"] == report_month][stat_col].mean()
+
+    cur_stat  = cur_row[stat_col]
+    deviation = float(cur_stat - avg_3yr) if not pd.isna(avg_3yr) else None
+
+    return {
+        "report_month":      report_month,
+        "report_month_name": _month_abbr(report_month),
+        "current_abs":       float(cur_row["value"]),
+        "current_pct":       float(cur_row["value_pct"]) if not pd.isna(cur_row["value_pct"]) else None,
+        "primary":           float(cur_stat),
+        "avg_3yr":           float(avg_3yr) if not pd.isna(avg_3yr) else None,
+        "deviation":         deviation,
+        "use_pct":           use_pct,
+    }
+
+
 def run_all(
     df: pd.DataFrame,
     metric: str = "ratio",

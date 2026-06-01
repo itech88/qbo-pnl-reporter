@@ -132,6 +132,34 @@ def _extract_section_by_group(
     return {}
 
 
+def _find_section_summary_by_header(
+    rows: list[dict],
+    header_text: str,
+    col_map: dict[int, int],
+) -> dict[int, float]:
+    """Recursively search for a Section matched by header text and return its Summary."""
+    target = header_text.lower().strip()
+    for row in rows:
+        if row.get("type") != "Section":
+            continue
+        header_val = (
+            row.get("Header", {}).get("ColData", [{}])[0]
+            .get("value", "").strip().lower()
+        )
+        if header_val == target:
+            col_data = row.get("Summary", {}).get("ColData", [])
+            return {
+                month: _to_float(col_data[idx].get("value", ""))
+                for idx, month in col_map.items()
+                if idx < len(col_data)
+            }
+        inner = row.get("Rows", {}).get("Row", [])
+        result = _find_section_summary_by_header(inner, header_text, col_map)
+        if result:
+            return result
+    return {}
+
+
 def _find_line_item(
     rows: list[dict],
     account_name: str,
@@ -195,6 +223,17 @@ def _extract_value(
                 "Line item '%s' not found in P&L response — "
                 "check the account name matches the QBO chart of accounts exactly.",
                 account_name,
+            )
+        return result
+
+    elif etype == "subsection_summary":
+        header_text = extraction["header_text"]
+        result = _find_section_summary_by_header(rows, header_text, col_map)
+        if not result:
+            log.warning(
+                "Sub-section '%s' not found in P&L response — "
+                "check the header text matches the QBO chart of accounts exactly.",
+                header_text,
             )
         return result
 

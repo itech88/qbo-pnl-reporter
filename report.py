@@ -42,8 +42,9 @@ def _fmt_pct(value) -> str:
 
 def _jinja_env() -> Environment:
     env = Environment(loader=FileSystemLoader(_TEMPLATE_DIR), autoescape=True)
-    env.filters["currency"] = _fmt_currency
-    env.filters["pct"]      = _fmt_pct
+    env.filters["currency"]      = _fmt_currency
+    env.filters["pct"]           = _fmt_pct
+    env.filters["format_number"] = lambda v: f"{int(v):,}"
     return env
 
 
@@ -249,6 +250,109 @@ def build_report(
     }
 
     template = _jinja_env().get_template("report.html")
+    return template.render(**context), chart_png
+
+
+# ---------------------------------------------------------------------------
+# Scorecard
+# ---------------------------------------------------------------------------
+
+def _scorecard_chart(metrics: list[dict]) -> bytes:
+    """Horizontal diverging bar chart — deviation from 3-yr average per metric."""
+    names      = [m["name"] for m in metrics]
+    deviations = [m["deviation"] or 0.0 for m in metrics]
+    colors     = [m["bar_color"] for m in metrics]
+
+    fig, ax = plt.subplots(figsize=(8, max(3, len(names) * 0.55)), dpi=150)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#f8f9fa")
+
+    y_pos = range(len(names))
+    ax.barh(list(y_pos), deviations, color=colors, alpha=0.85, height=0.55)
+    ax.axvline(0, color="#475569", linewidth=1.0, linestyle="-")
+
+    ax.set_yticks(list(y_pos))
+    ax.set_yticklabels(names, fontsize=8)
+    ax.xaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"{x*100:+.1f}pp" if abs(x) < 1 else f"{x*100:+.0f}%")
+    )
+    ax.tick_params(axis="x", labelsize=8)
+    ax.set_xlabel("Deviation from 3-Year Monthly Average", fontsize=8)
+    ax.set_title("This Month vs 3-Year Average", fontsize=10, fontweight="bold", pad=10)
+    ax.grid(axis="x", linestyle="--", alpha=0.4, zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.invert_yaxis()
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_scorecard(
+    metrics: list[dict],
+    scorecard_config: dict,
+) -> tuple[str, bytes]:
+    """
+    Render the monthly business dashboard scorecard.
+
+    Each item in `metrics` is the output of analytics.current_month_stats()
+    augmented with 'name' and 'higher_is_better' from the report config.
+    """
+    threshold = float(os.getenv("COGS_VARIANCE_THRESHOLD", "0.05"))
+
+    for m in metrics:
+        dev = m.get("deviation")
+        hib = m.get("higher_is_better", False)
+
+        if dev is None or m.get("avg_3yr") is None:
+            m["status"]    = "GREY"
+            m["status_bg"] = "#f1f5f9"
+            m["status_fg"] = "#64748b"
+            m["bar_color"] = "#94a3b8"
+            continue
+
+        # Flip sign for metrics where higher is better so RED always = bad
+        signed = dev if not hib else -dev
+        if abs(dev) < threshold:
+            m["status"]    = "ON TRACK"
+            m["status_bg"] = "#dcfce7"
+            m["status_fg"] = "#166534"
+            m["bar_color"] = "#16a34a"
+        elif abs(dev) < threshold * 2:
+            m["status"]    = "WATCH"
+            m["status_bg"] = "#fef9c3"
+            m["status_fg"] = "#854d0e"
+            m["bar_color"] = "#ca8a04"
+        else:
+            m["status"]    = "ACTION"
+            m["status_bg"] = "#fee2e2"
+            m["status_fg"] = "#991b1b"
+            m["bar_color"] = "#dc2626" if signed > 0 else "#2563eb"
+
+        m["deviation_fmt"] = (
+            f"{dev * 100:+.1f}pp" if m["use_pct"] else f"{dev:+,.0f}"
+        )
+
+    chart_png = _scorecard_chart(metrics)
+
+    # Derive the reported month from the first metric that has data
+    report_month_name = next(
+        (m.get("report_month_name", "") for m in metrics if m.get("report_month_name")),
+        datetime.now().strftime("%B"),
+    )
+
+    context = {
+        "report_date":       datetime.now().strftime("%B %d, %Y"),
+        "current_year":      _CURRENT_YEAR,
+        "report_month_name": report_month_name,
+        "metrics":           metrics,
+        "threshold_pct":     f"{threshold * 100:.0f}",
+    }
+
+    template = _jinja_env().get_template("scorecard.html")
     return template.render(**context), chart_png
 
 

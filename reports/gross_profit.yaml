@@ -1,8 +1,8 @@
-name: "Net Operating Income"
-subject: "Net Operating Income — {month} {year}"
+name: "Gross Profit"
+subject: "Gross Profit — {month} {year}"
 extraction:
   type: section_summary
-  group: NetOperatingIncome
+  group: GrossProfit
 metric: both
 higher_is_better: true
 trigger_days: [1, 16]
