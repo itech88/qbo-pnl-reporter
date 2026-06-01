@@ -6,9 +6,10 @@ and sends a separate email per config. Called by cron or GitHub Actions on the
 1st and 16th of each month.
 
 Usage:
-    python scheduler.py              # runs only on the 1st or 16th
-    python scheduler.py --force      # runs regardless of date
-    python scheduler.py --dry-run    # full pipeline, no emails sent
+    python scheduler.py                          # runs only on the 1st or 16th
+    python scheduler.py --force                  # runs regardless of date
+    python scheduler.py --dry-run                # full pipeline, no emails sent
+    python scheduler.py --force --report "COGS"  # run only one named report
 """
 
 import argparse
@@ -53,10 +54,11 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="QBO monthly report scheduler")
     p.add_argument("--force",   action="store_true", help="Run regardless of today's date")
     p.add_argument("--dry-run", action="store_true", help="Build reports but skip sending")
+    p.add_argument("--report",  default=None,        help="Run only the named report config (matches 'name' field)")
     return p.parse_args()
 
 
-def run(force: bool = False, dry_run: bool = False) -> None:
+def run(force: bool = False, dry_run: bool = False, report_filter: str | None = None) -> None:
     today = datetime.now()
 
     if not force and today.day not in _TRIGGER_DAYS:
@@ -79,6 +81,11 @@ def run(force: bool = False, dry_run: bool = False) -> None:
 
     # ── Step 1: Load configs ─────────────────────────────────────────────────
     configs = load_report_configs()
+    if report_filter:
+        configs = [c for c in configs if c["name"].lower() == report_filter.lower()]
+        if not configs:
+            log.error("No report config found matching --report %r", report_filter)
+            sys.exit(1)
     log.info("[%s] Loaded %d report config(s): %s",
              run_id, len(configs), ", ".join(c["name"] for c in configs))
 
@@ -144,7 +151,7 @@ def _ordinal(n: int) -> str:
 if __name__ == "__main__":
     args = _parse_args()
     try:
-        run(force=args.force, dry_run=args.dry_run)
+        run(force=args.force, dry_run=args.dry_run, report_filter=args.report)
     except Exception:
         log.error("FATAL ERROR — pipeline aborted:\n%s", traceback.format_exc())
         sys.exit(1)
