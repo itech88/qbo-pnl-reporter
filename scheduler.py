@@ -70,19 +70,24 @@ def run(force: bool = False, dry_run: bool = False) -> None:
     # ── Step 3: Render ───────────────────────────────────────────────────────
     log.info("[%s] Step 3/4 — Rendering HTML report…", run_id)
     from report import build_report
-    html = build_report(mom_df, yoy_df, flags_df)
-    log.info("[%s] Report size: %d chars", run_id, len(html))
+    import base64
+    html, chart_png = build_report(mom_df, yoy_df, flags_df)
+    log.info("[%s] Report size: %d chars | Chart: %d bytes", run_id, len(html), len(chart_png))
 
     # ── Step 4: Send ─────────────────────────────────────────────────────────
     if dry_run:
         out = os.path.join(os.path.dirname(__file__), "preview_report.html")
+        preview = html.replace(
+            'src="cid:monthly_chart"',
+            f'src="data:image/png;base64,{base64.b64encode(chart_png).decode()}"',
+        )
         with open(out, "w") as f:
-            f.write(html)
+            f.write(preview)
         log.info("[%s] Step 4/4 — [DRY RUN] Report saved to %s — no email sent.", run_id, out)
     else:
         log.info("[%s] Step 4/4 — Sending email…", run_id)
         from mailer import send_report
-        send_report(html)
+        send_report(html, chart_png)
         log.info("[%s] Email sent successfully.", run_id)
 
     elapsed = time.monotonic() - started_at

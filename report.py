@@ -50,8 +50,8 @@ def _jinja_env() -> Environment:
 # Chart
 # ---------------------------------------------------------------------------
 
-def _build_chart(mom_df: pd.DataFrame, yoy_df: pd.DataFrame) -> str:
-    """Render COGS % bar chart with prior-year line overlays. Returns base64 PNG."""
+def _build_chart(mom_df: pd.DataFrame, yoy_df: pd.DataFrame) -> bytes:
+    """Render COGS % bar chart with prior-year line overlays. Returns raw PNG bytes."""
     active = mom_df[mom_df["income"] > 0].copy()
     months = active["month"].tolist()
     labels = active["month_name"].tolist()
@@ -102,7 +102,7 @@ def _build_chart(mom_df: pd.DataFrame, yoy_df: pd.DataFrame) -> str:
     fig.savefig(buf, format="png", bbox_inches="tight")
     plt.close(fig)
     buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
+    return buf.read()
 
 
 # ---------------------------------------------------------------------------
@@ -170,18 +170,22 @@ def build_report(
     mom_df: pd.DataFrame,
     yoy_df: pd.DataFrame,
     flags_df: pd.DataFrame,
-) -> str:
-    """Render and return the full HTML email string."""
+) -> tuple[str, bytes]:
+    """
+    Render the HTML email and chart.
+    Returns (html, chart_png) where chart_png is raw PNG bytes.
+    The HTML references the chart as cid:monthly_chart for email delivery.
+    """
     years = sorted(
         c.replace("cogs_pct_", "")
         for c in yoy_df.columns
         if c.startswith("cogs_pct_")
     )
+    chart_png = _build_chart(mom_df, yoy_df)
 
     context = {
         "current_year":  _CURRENT_YEAR,
         "report_date":   datetime.now().strftime("%B %d, %Y"),
-        "chart_b64":     _build_chart(mom_df, yoy_df),
         "mom_rows":      _mom_rows(mom_df, flags_df),
         "yoy_rows":      _yoy_rows(yoy_df, years),
         "years":         years,
@@ -190,7 +194,7 @@ def build_report(
     }
 
     template = _jinja_env().get_template("report.html")
-    return template.render(**context)
+    return template.render(**context), chart_png
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +209,12 @@ if __name__ == "__main__":
     raw = fetch_all()
     mom, yoy, flags = run_all(raw)
 
-    html = build_report(mom, yoy, flags)
+    html, chart_png = build_report(mom, yoy, flags)
+    preview = html.replace(
+        'src="cid:monthly_chart"',
+        f'src="data:image/png;base64,{base64.b64encode(chart_png).decode()}"',
+    )
     out_path = os.path.join(os.path.dirname(__file__), "preview_report.html")
     with open(out_path, "w") as f:
-        f.write(html)
+        f.write(preview)
     print(f"Report written to {out_path} — open in a browser to preview.")

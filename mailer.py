@@ -12,6 +12,7 @@ import os
 import smtplib
 import ssl
 from datetime import datetime
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -28,12 +29,18 @@ def _default_subject() -> str:
     return f"COGS Report — {datetime.now().strftime('%B %Y')}"
 
 
-def _build_mime(subject: str, html: str) -> MIMEMultipart:
-    msg = MIMEMultipart("alternative")
+def _build_mime(subject: str, html: str, chart_png: bytes) -> MIMEMultipart:
+    # multipart/related allows the HTML to reference the image by CID
+    msg = MIMEMultipart("related")
     msg["Subject"] = subject
     msg["From"] = os.environ["EMAIL_FROM"]
     msg["To"] = os.environ["EMAIL_TO"]
     msg.attach(MIMEText(html, "html"))
+
+    img = MIMEImage(chart_png, "png")
+    img.add_header("Content-ID", "<monthly_chart>")
+    img.add_header("Content-Disposition", "inline", filename="chart.png")
+    msg.attach(img)
     return msg
 
 
@@ -41,13 +48,13 @@ def _build_mime(subject: str, html: str) -> MIMEMultipart:
 # SMTP backend
 # ---------------------------------------------------------------------------
 
-def _send_smtp(subject: str, html: str) -> None:
+def _send_smtp(subject: str, html: str, chart_png: bytes) -> None:
     host     = os.environ["SMTP_HOST"]
     port     = int(os.getenv("SMTP_PORT", "587"))
     user     = os.environ["SMTP_USER"]
     password = os.environ["SMTP_PASSWORD"]
 
-    msg = _build_mime(subject, html)
+    msg = _build_mime(subject, html, chart_png)
     context = ssl.create_default_context()
 
     with smtplib.SMTP(host, port, timeout=30) as server:
@@ -63,9 +70,12 @@ def _send_smtp(subject: str, html: str) -> None:
 # SendGrid backend
 # ---------------------------------------------------------------------------
 
-def _send_sendgrid(subject: str, html: str) -> None:
+def _send_sendgrid(subject: str, html: str, chart_png: bytes) -> None:
+    import base64
     from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Mail
+    from sendgrid.helpers.mail import (
+        Mail, Attachment, FileContent, FileName, FileType, Disposition, ContentId,
+    )
 
     message = Mail(
         from_email=os.environ["EMAIL_FROM"],
@@ -73,6 +83,14 @@ def _send_sendgrid(subject: str, html: str) -> None:
         subject=subject,
         html_content=html,
     )
+    attachment = Attachment(
+        FileContent(base64.b64encode(chart_png).decode()),
+        FileName("chart.png"),
+        FileType("image/png"),
+        Disposition("inline"),
+        ContentId("monthly_chart"),
+    )
+    message.attachment = attachment
     sg = SendGridAPIClient(os.environ["SENDGRID_API_KEY"])
     response = sg.send(message)
     print(f"[sendgrid] Sent — status {response.status_code}")
@@ -82,7 +100,7 @@ def _send_sendgrid(subject: str, html: str) -> None:
 # AWS SES backend
 # ---------------------------------------------------------------------------
 
-def _send_ses(subject: str, html: str) -> None:
+def _send_ses(subject: str, html: str, chart_png: bytes) -> None:
     import boto3
 
     client = boto3.client(
@@ -113,9 +131,9 @@ _BACKENDS = {
 }
 
 
-def send_report(html: str, subject: str | None = None) -> None:
+def send_report(html: str, chart_png: bytes, subject: str | None = None) -> None:
     """
-    Deliver `html` as an email report.
+    Deliver the HTML report with the chart embedded as an inline CID attachment.
     Provider is selected by EMAIL_PROVIDER in .env (smtp | sendgrid | ses).
     """
     provider = os.getenv("EMAIL_PROVIDER", "smtp").lower().strip()
@@ -125,7 +143,7 @@ def send_report(html: str, subject: str | None = None) -> None:
         )
 
     subject = subject or _default_subject()
-    _BACKENDS[provider](subject, html)
+    _BACKENDS[provider](subject, html, chart_png)
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +161,7 @@ if __name__ == "__main__":
     print("Fetching data…")
     raw = fetch_all()
     mom, yoy, flags = run_all(raw)
-    html = build_report(mom, yoy, flags)
+    html, chart_png = build_report(mom, yoy, flags)
 
     if dry_run:
         subject = _default_subject()
@@ -152,5 +170,6 @@ if __name__ == "__main__":
         print(f"  To:      {os.getenv('EMAIL_TO')}")
         print(f"  Subject: {subject}")
         print(f"  Body:    {len(html):,} chars of HTML")
+        print(f"  Chart:   {len(chart_png):,} bytes PNG")
     else:
-        send_report(html)
+        send_report(html, chart_png)
