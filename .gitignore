@@ -6,7 +6,9 @@
 
 # Logs and generated output
 logs/
-preview_report.html
+preview_*.html
+raw_pl.json
+dump_pl.py
 data/*.db
 
 # Python
