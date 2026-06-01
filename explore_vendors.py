@@ -1,67 +1,66 @@
 """
-One-off exploration — queries QBO for Bill and Purchase transactions to
-confirm vendor names and COGS account coding before building the report.
-Run: python explore_vendors.py
+Vendor exploration — uses the Reports API (same path as P&L) to pull
+TransactionListByVendor data. Avoids the Query API cluster routing issue.
+Run via GitHub Actions workflow: explore_vendors.yml
 """
-import json
 import os
-from collections import defaultdict
 from dotenv import load_dotenv
 load_dotenv()
 from auth import get_session
+from fetcher import _base_url, _realm_id
 
-base  = "https://quickbooks.api.intuit.com"
-realm = os.environ["QBO_REALM_ID"]
-session = get_session()
+session    = get_session()
+report_url = f"{_base_url()}/v3/company/{_realm_id()}/reports"
 
-def query(sql):
-    r = session.get(
-        f"{base}/v3/company/{realm}/query",
-        params={"query": sql},
-        timeout=20,
-    )
+def get_report(name, params=None):
+    r = session.get(f"{report_url}/{name}", params=params or {}, timeout=30)
     if not r.ok:
-        print(f"HTTP {r.status_code}: {r.text[:500]}")
-        r.raise_for_status()
+        print(f"  HTTP {r.status_code} on {name}: {r.text[:300]}")
+        return None
     return r.json()
 
-# ── 1. Unique vendors from Bills in 2026 ────────────────────────────────────
-print("\n── Vendors with Bills in 2026 ──")
-result = query(
-    "SELECT VendorRef.name, TotalAmt FROM Bill "
-    "WHERE TxnDate >= '2026-01-01' AND TxnDate <= '2026-12-31' "
-    "MAXRESULTS 100"
-)
-bills = result.get("QueryResponse", {}).get("Bill", [])
-vendor_totals = defaultdict(float)
-for b in bills:
-    name = b.get("VendorRef", {}).get("name", "Unknown")
-    vendor_totals[name] += float(b.get("TotalAmt", 0))
-for name, total in sorted(vendor_totals.items(), key=lambda x: -x[1]):
-    print(f"  {name:<40} ${total:>10,.2f}")
+# ── 1. TransactionListByVendor ──────────────────────────────────────────────
+print("\n── TransactionListByVendor (Jan-May 2026) ──")
+data = get_report("TransactionListByVendor", {
+    "start_date": "2026-01-01",
+    "end_date":   "2026-05-31",
+})
+if data:
+    rows = data.get("Rows", {}).get("Row", [])
+    print(f"  Top-level rows: {len(rows)}")
+    for row in rows[:5]:
+        rtype = row.get("type", "?")
+        if rtype == "Section":
+            header = row.get("Header", {}).get("ColData", [{}])[0].get("value", "")
+            print(f"  SECTION: {header}")
+            inner = row.get("Rows", {}).get("Row", [])
+            for ir in inner[:3]:
+                cols = [c.get("value","") for c in ir.get("ColData", [])]
+                print(f"    {cols}")
 
-# ── 2. Sample a Bill to see its line-item structure ──────────────────────────
-if bills:
-    print("\n── Sample Bill line items (first bill) ──")
-    for line in bills[0].get("Line", []):
-        detail = line.get("AccountBasedExpenseLineDetail", {})
-        acct   = detail.get("AccountRef", {}).get("name", "—")
-        amt    = line.get("Amount", 0)
-        print(f"  Account: {acct:<40} Amount: ${amt:>10,.2f}")
+# ── 2. VendorBalance ────────────────────────────────────────────────────────
+print("\n── VendorBalance ──")
+data2 = get_report("VendorBalance", {
+    "start_date": "2026-01-01",
+    "end_date":   "2026-05-31",
+})
+if data2:
+    rows2 = data2.get("Rows", {}).get("Row", [])
+    print(f"  Top-level rows: {len(rows2)}")
+    for row in rows2[:10]:
+        cols = [c.get("value","") for c in row.get("ColData", [])]
+        if cols and cols[0]:
+            print(f"  {cols}")
 
-# ── 3. Unique vendors from Purchases (credit card / cash) in 2026 ────────────
-print("\n── Vendors with Purchases in 2026 ──")
-result2 = query(
-    "SELECT EntityRef.name, TotalAmt FROM Purchase "
-    "WHERE TxnDate >= '2026-01-01' AND TxnDate <= '2026-12-31' "
-    "MAXRESULTS 100"
-)
-purchases = result2.get("QueryResponse", {}).get("Purchase", [])
-purch_totals = defaultdict(float)
-for p in purchases:
-    name = p.get("EntityRef", {}).get("name", "Unknown/No Vendor")
-    purch_totals[name] += float(p.get("TotalAmt", 0))
-for name, total in sorted(purch_totals.items(), key=lambda x: -x[1]):
-    print(f"  {name:<40} ${total:>10,.2f}")
-
-print(f"\nTotal Bills: {len(bills)}  |  Total Purchases: {len(purchases)}")
+# ── 3. AgedPayables ─────────────────────────────────────────────────────────
+print("\n── AgedPayables (to see vendor names) ──")
+data3 = get_report("AgedPayables", {"report_date": "2026-05-31"})
+if data3:
+    rows3 = data3.get("Rows", {}).get("Row", [])
+    print(f"  Top-level rows: {len(rows3)}")
+    for row in rows3[:10]:
+        rtype = row.get("type","")
+        if rtype == "Data":
+            cols = [c.get("value","") for c in row.get("ColData",[])]
+            if cols and cols[0]:
+                print(f"  {cols}")
