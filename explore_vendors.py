@@ -1,8 +1,10 @@
 """
-Vendor exploration phase 2 — pull full vendor list and test monthly summarization.
+Vendor exploration phase 3 — confirm we can expose the distribution (split)
+account per transaction so we can dynamically filter to COGS vendors.
 """
 import os
 from collections import defaultdict
+from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 from auth import get_session
@@ -18,61 +20,64 @@ def get_report(name, params=None):
         return None
     return r.json()
 
-# ── Full vendor list with totals (Jan-May 2026) ──────────────────────────────
-print("\n── All Vendors + Monthly Totals (TransactionListByVendor, Jan-May 2026) ──")
+# ── A. AccountList report — find COGS accounts and their IDs ─────────────────
+print("\n── AccountList (looking for COGS accounts) ──")
+acc = get_report("AccountList")
+if acc:
+    cols = [c.get("ColTitle","") for c in acc.get("Columns",{}).get("Column",[])]
+    print(f"  Columns: {cols}")
+    for row in acc.get("Rows",{}).get("Row",[]):
+        cd = [c.get("value","") for c in row.get("ColData",[])]
+        if cd and ("cogs" in cd[0].lower() or "cost of goods" in cd[0].lower()
+                   or (len(cd) > 1 and "cost of goods" in str(cd).lower())):
+            print(f"  COGS account row: {cd}")
+
+# ── B. TransactionListByVendor with split account column exposed ─────────────
+print("\n── TransactionListByVendor with columns=tx_date,txn_type,name,split_acc,subt_nat_amount ──")
 data = get_report("TransactionListByVendor", {
     "start_date": "2026-01-01",
     "end_date":   "2026-05-31",
+    "columns":    "tx_date,txn_type,name,split_acc,subt_nat_amount",
 })
 if data:
-    vendor_totals = {}
-    rows = data.get("Rows", {}).get("Row", [])
-    print(f"Total vendor sections: {len(rows)}")
+    cols = [(c.get("ColTitle",""), c.get("ColType","")) for c in data.get("Columns",{}).get("Column",[])]
+    print(f"  Columns returned: {cols}")
+    rows = data.get("Rows",{}).get("Row",[])
+    shown = 0
     for row in rows:
-        if row.get("type") == "Section":
-            vendor = row.get("Header", {}).get("ColData", [{}])[0].get("value", "")
-            if not vendor:
-                continue
-            total = 0.0
-            for tx in row.get("Rows", {}).get("Row", []):
-                cols = tx.get("ColData", [])
-                if len(cols) >= 7:
-                    try:
-                        total += float(cols[6].get("value", 0) or 0)
-                    except (ValueError, TypeError):
-                        pass
-            vendor_totals[vendor] = total
+        if row.get("type") == "Section" and shown < 6:
+            vendor = row.get("Header",{}).get("ColData",[{}])[0].get("value","")
+            inner = row.get("Rows",{}).get("Row",[])
+            if inner:
+                sample = [c.get("value","") for c in inner[0].get("ColData",[])]
+                print(f"  {vendor:<28} sample row: {sample}")
+                shown += 1
 
-    for vendor, total in sorted(vendor_totals.items(), key=lambda x: -x[1]):
-        print(f"  {vendor:<45} ${total:>10,.2f}")
-
-# ── Test: monthly breakdown for one vendor (Alcon) ───────────────────────────
-print("\n── Monthly breakdown for Alcon (by parsing transaction dates) ──")
-if data:
-    monthly = defaultdict(float)
-    for row in rows:
-        if row.get("type") == "Section":
-            vendor = row.get("Header", {}).get("ColData", [{}])[0].get("value", "")
-            if "alcon" not in vendor.lower():
-                continue
-            for tx in row.get("Rows", {}).get("Row", []):
-                cols = tx.get("ColData", [])
-                if len(cols) >= 7:
-                    date_str = cols[0].get("value", "")
-                    try:
-                        month = int(date_str.split("-")[1])
-                        amount = float(cols[6].get("value", 0) or 0)
-                        monthly[month] += amount
-                    except (ValueError, IndexError, TypeError):
-                        pass
-    for m, amt in sorted(monthly.items()):
-        from datetime import datetime
-        mn = datetime(2000, m, 1).strftime("%b")
-        print(f"  {mn}: ${amt:,.2f}")
-
-# ── Column headers ────────────────────────────────────────────────────────────
-print("\n── Column headers from TransactionListByVendor ──")
-if data:
-    cols = data.get("Columns", {}).get("Column", [])
-    for i, c in enumerate(cols):
-        print(f"  [{i}] {c.get('ColTitle','?')!r}  type={c.get('ColType','?')}")
+# ── C. Try filtering TransactionListByVendor to COGS account by name ──────────
+print("\n── Same report, account filter test (account name 'Supplies & materials - COGS') ──")
+data2 = get_report("TransactionListByVendor", {
+    "start_date": "2026-01-01",
+    "end_date":   "2026-05-31",
+    "columns":    "tx_date,txn_type,name,split_acc,subt_nat_amount",
+})
+if data2:
+    # Group by vendor where split account contains 'cogs'
+    vendor_cogs = defaultdict(float)
+    col_titles = [c.get("ColType","") for c in data2.get("Columns",{}).get("Column",[])]
+    print(f"  ColTypes: {col_titles}")
+    for row in data2.get("Rows",{}).get("Row",[]):
+        if row.get("type") != "Section":
+            continue
+        vendor = row.get("Header",{}).get("ColData",[{}])[0].get("value","")
+        for tx in row.get("Rows",{}).get("Row",[]):
+            cd = [c.get("value","") for c in tx.get("ColData",[])]
+            joined = " ".join(cd).lower()
+            if "cogs" in joined or "cost of goods" in joined:
+                # find numeric amount (last col)
+                try:
+                    vendor_cogs[vendor] += float(cd[-1] or 0)
+                except (ValueError, TypeError):
+                    pass
+    print("  Vendors with COGS-account transactions:")
+    for v, amt in sorted(vendor_cogs.items(), key=lambda x:-x[1]):
+        print(f"    {v:<35} ${amt:>10,.2f}")
