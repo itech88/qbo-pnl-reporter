@@ -1,0 +1,120 @@
+{
+  "Header": {
+    "Time": "2026-06-01T08:00:00-07:00",
+    "ReportName": "ProfitAndLoss",
+    "ReportBasis": "Accrual",
+    "StartPeriod": "2026-01-01",
+    "EndPeriod": "2026-06-30",
+    "SummarizeColumnsBy": "Month",
+    "Currency": "USD"
+  },
+  "Columns": {
+    "Column": [
+      {"ColTitle": "",         "ColType": "Account"},
+      {"ColTitle": "Jan 2026", "ColType": "Money"},
+      {"ColTitle": "Feb 2026", "ColType": "Money"},
+      {"ColTitle": "Mar 2026", "ColType": "Money"},
+      {"ColTitle": "Apr 2026", "ColType": "Money"},
+      {"ColTitle": "May 2026", "ColType": "Money"},
+      {"ColTitle": "Jun 2026", "ColType": "Money"},
+      {"ColTitle": "Total",    "ColType": "Money"}
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "type": "Section",
+        "group": "Income",
+        "Header": {
+          "ColData": [
+            {"value": "Income"},  {"value": ""}, {"value": ""}, {"value": ""},
+            {"value": ""},        {"value": ""}, {"value": ""}, {"value": ""}
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "type": "Data",
+              "ColData": [
+                {"value": "Patient Exam Fees"},
+                {"value": "28000.00"}, {"value": "30000.00"}, {"value": "27500.00"},
+                {"value": "31000.00"}, {"value": "29500.00"}, {"value": "32000.00"},
+                {"value": "178000.00"}
+              ]
+            },
+            {
+              "type": "Data",
+              "ColData": [
+                {"value": "Optical Product Sales"},
+                {"value": "14000.00"}, {"value": "15000.00"}, {"value": "13500.00"},
+                {"value": "16000.00"}, {"value": "15500.00"}, {"value": "16500.00"},
+                {"value": "90500.00"}
+              ]
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {"value": "Total Income"},
+            {"value": "42000.00"}, {"value": "45000.00"}, {"value": "41000.00"},
+            {"value": "47000.00"}, {"value": "45000.00"}, {"value": "48500.00"},
+            {"value": "268500.00"}
+          ]
+        }
+      },
+      {
+        "type": "Section",
+        "group": "COGS",
+        "Header": {
+          "ColData": [
+            {"value": "Cost of Goods Sold"}, {"value": ""}, {"value": ""}, {"value": ""},
+            {"value": ""},                   {"value": ""}, {"value": ""}, {"value": ""}
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "type": "Data",
+              "ColData": [
+                {"value": "Frames & Lenses"},
+                {"value": "8400.00"}, {"value": "9000.00"}, {"value": "8200.00"},
+                {"value": "9600.00"}, {"value": "9000.00"}, {"value": "9700.00"},
+                {"value": "53900.00"}
+              ]
+            },
+            {
+              "type": "Data",
+              "ColData": [
+                {"value": "Contact Lenses"},
+                {"value": "4200.00"}, {"value": "4500.00"}, {"value": "4050.00"},
+                {"value": "4800.00"}, {"value": "4500.00"}, {"value": "4850.00"},
+                {"value": "26900.00"}
+              ]
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {"value": "Total Cost of Goods Sold"},
+            {"value": "12600.00"}, {"value": "13500.00"}, {"value": "12250.00"},
+            {"value": "14400.00"}, {"value": "13500.00"}, {"value": "14550.00"},
+            {"value": "80800.00"}
+          ]
+        }
+      },
+      {
+        "type": "Section",
+        "group": "GrossProfit",
+        "Header": {"ColData": [{"value": "Gross Profit"}]},
+        "Summary": {
+          "ColData": [
+            {"value": "Total Gross Profit"},
+            {"value": "29400.00"}, {"value": "31500.00"}, {"value": "28750.00"},
+            {"value": "32600.00"}, {"value": "31500.00"}, {"value": "33950.00"},
+            {"value": "187700.00"}
+          ]
+        }
+      }
+    ]
+  }
+}

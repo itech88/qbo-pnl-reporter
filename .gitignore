@@ -1,0 +1,19 @@
+# Credentials — never commit
+.env
+
+# Virtual environment
+.venv/
+
+# Logs and generated output
+logs/
+preview_report.html
+data/*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# macOS
+.DS_Store
