@@ -1,0 +1,9 @@
+name: "COGS by Vendor"
+subject: "COGS by Vendor — {month} {year}"
+type: vendor_breakdown
+# Case-insensitive substring used to identify Cost of Goods Sold sections in
+# the ProfitAndLossDetail report. Any vendor posting to a matching account is
+# included automatically — the vendor set is rebuilt from production each run.
+cogs_account_match: "cost of goods"
+trigger_days: [1, 16]
+email_to: mtbpalmdale@gmail.com

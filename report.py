@@ -254,6 +254,107 @@ def build_report(
 
 
 # ---------------------------------------------------------------------------
+# Vendor COGS report
+# ---------------------------------------------------------------------------
+
+_VENDOR_PALETTE = [
+    "#2563eb", "#16a34a", "#ca8a04", "#dc2626", "#7c3aed",
+    "#0891b2", "#db2777", "#94a3b8",
+]
+
+
+def _vendor_chart(matrix: dict, report_name: str) -> bytes:
+    """Stacked bar chart — COGS spend per vendor across the current year's months."""
+    months   = matrix["months"]
+    vendors  = matrix["vendors"]
+    series   = matrix["series"]
+    labels   = [datetime(2000, m, 1).strftime("%b") for m in months]
+
+    fig, ax = plt.subplots(figsize=(9, 4.5), dpi=150)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#f8f9fa")
+
+    bottoms = [0.0] * len(months)
+    for i, v in enumerate(vendors):
+        vals  = series.get(v, [0.0] * len(months))
+        color = "#cbd5e1" if v == "Other" else _VENDOR_PALETTE[i % len(_VENDOR_PALETTE)]
+        ax.bar(range(len(months)), vals, bottom=bottoms, label=v,
+               color=color, width=0.6, zorder=3)
+        bottoms = [b + x for b, x in zip(bottoms, vals)]
+
+    ax.set_xticks(range(len(months)))
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda y, _: f"${y:,.0f}"))
+    ax.tick_params(axis="y", labelsize=9)
+    ax.set_ylabel("COGS Spend", fontsize=9)
+    ax.set_title(f"{report_name} by Month", fontsize=11, fontweight="bold", pad=12)
+    ax.legend(fontsize=7.5, framealpha=0.8, ncol=2, loc="upper left")
+    ax.grid(axis="y", linestyle="--", alpha=0.5, zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_vendor_report(
+    df,
+    report_config: dict,
+) -> tuple[str, bytes]:
+    """
+    Render the COGS-by-vendor report.
+    `df` is the long DataFrame from vendor_fetcher (year, month, vendor, amount).
+    """
+    from vendor_analytics import (
+        current_month_breakdown, monthly_share_matrix, vendor_yoy,
+    )
+
+    breakdown = current_month_breakdown(df)
+    matrix    = monthly_share_matrix(df, top_n=6)
+    yoy       = vendor_yoy(df)
+
+    chart_png = _vendor_chart(matrix, report_config["name"])
+
+    # Pre-format breakdown rows
+    breakdown_rows = [
+        {
+            "vendor": v["vendor"],
+            "amount": _fmt_currency(v["amount"]),
+            "share":  f"{v['share'] * 100:.1f}%",
+            "bar_w":  round(v["share"] * 100, 1),
+        }
+        for v in breakdown["vendors"]
+    ]
+
+    # Pre-format YoY rows
+    yoy_rows = []
+    for r in yoy["rows"]:
+        cells = {"vendor": r["vendor"]}
+        for y in yoy["years"]:
+            cells[f"y_{y}"] = _fmt_currency(r["by_year"].get(y, 0.0))
+        yoy_rows.append(cells)
+
+    context = {
+        "report_name":    report_config["name"],
+        "report_date":    datetime.now().strftime("%B %d, %Y"),
+        "current_year":   _CURRENT_YEAR,
+        "period_label":   f"{breakdown['month_name']} {breakdown['year']}" if breakdown["year"] else "—",
+        "total":          _fmt_currency(breakdown["total"]),
+        "vendor_count":   len(breakdown["vendors"]),
+        "breakdown_rows": breakdown_rows,
+        "yoy_years":      yoy["years"],
+        "yoy_month":      yoy["month_name"],
+        "yoy_rows":       yoy_rows,
+    }
+
+    template = _jinja_env().get_template("vendor_report.html")
+    return template.render(**context), chart_png
+
+
+# ---------------------------------------------------------------------------
 # Scorecard
 # ---------------------------------------------------------------------------
 

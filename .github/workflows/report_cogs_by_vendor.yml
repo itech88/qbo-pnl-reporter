@@ -1,0 +1,49 @@
+name: Report — COGS by Vendor
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (artifact only, no email)"
+        type: boolean
+        default: false
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run report
+        env:
+          QBO_CLIENT_ID:           ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET:       ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REDIRECT_URI:        ${{ secrets.QBO_REDIRECT_URI }}
+          QBO_REALM_ID:            ${{ secrets.QBO_REALM_ID }}
+          QBO_ACCESS_TOKEN:        ${{ secrets.QBO_ACCESS_TOKEN }}
+          QBO_REFRESH_TOKEN:       ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_TOKEN_EXPIRY:        ${{ secrets.QBO_TOKEN_EXPIRY }}
+          QBO_ENVIRONMENT:         production
+          EMAIL_PROVIDER:          ${{ secrets.EMAIL_PROVIDER }}
+          EMAIL_FROM:              ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO:                ${{ secrets.EMAIL_TO }}
+          SMTP_HOST:               ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:               ${{ secrets.SMTP_PORT }}
+          SMTP_USER:               ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD:           ${{ secrets.SMTP_PASSWORD }}
+          COGS_VARIANCE_THRESHOLD: ${{ secrets.COGS_VARIANCE_THRESHOLD }}
+        run: |
+          FLAG=$( [ "${{ github.event.inputs.dry_run }}" = "true" ] && echo "--dry-run" || echo "" )
+          python scheduler.py --force --report "COGS by Vendor" $FLAG
+      - uses: actions/upload-artifact@v4
+        if: ${{ github.event.inputs.dry_run == 'true' }}
+        with:
+          name: preview-cogs-by-vendor
+          path: preview_cogs_by_vendor.html
+          retention-days: 3

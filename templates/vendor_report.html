@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ report_name }} — {{ period_label }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:24px 16px;">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <div style="background:#1e40af;border-radius:8px 8px 0 0;padding:24px 32px;color:#ffffff;">
+    <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:1.2px;">Monthly Report</div>
+    <div style="font-size:22px;font-weight:700;margin-top:4px;">{{ report_name }}</div>
+    <div style="font-size:13px;margin-top:10px;opacity:0.8;">{{ report_date }} &nbsp;·&nbsp; Period: {{ period_label }}</div>
+
+    <table style="width:100%;margin-top:20px;border-collapse:collapse;">
+      <tr>
+        <td style="width:50%;padding:0 8px 0 0;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Total COGS ({{ yoy_month }})</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ total }}</div>
+        </td>
+        <td style="width:50%;padding:0 0 0 8px;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Vendors</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ vendor_count }}</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- ── Body ────────────────────────────────────────────────────────────── -->
+  <div style="background:#ffffff;padding:28px 32px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+
+    <!-- Chart -->
+    <img src="cid:monthly_chart"
+         alt="{{ report_name }} by month"
+         width="576"
+         style="width:100%;max-width:576px;border-radius:6px;display:block;margin-bottom:28px;">
+
+    <!-- ── Current-month vendor share ──────────────────────────────────── -->
+    <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:10px;">
+      {{ yoy_month }} {{ current_year }} — Spend by Vendor
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:32px;">
+      <thead>
+        <tr style="background:#f1f5f9;">
+          <th style="text-align:left;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Vendor</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Spend</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Share</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in breakdown_rows %}
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 10px;color:#1e293b;">{{ row.vendor }}</td>
+          <td style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;">{{ row.amount }}</td>
+          <td style="padding:9px 10px;color:#475569;">
+            <table style="width:100%;border-collapse:collapse;"><tr>
+              <td style="width:46px;text-align:right;padding:0 8px 0 0;font-weight:700;color:#1e293b;">{{ row.share }}</td>
+              <td>
+                <div style="background:#e2e8f0;border-radius:3px;height:8px;width:100%;">
+                  <div style="background:#2563eb;border-radius:3px;height:8px;width:{{ row.bar_w }}%;"></div>
+                </div>
+              </td>
+            </tr></table>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" style="padding:12px 10px;color:#94a3b8;font-size:12px;">No COGS vendor data for this period.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- ── Year-over-year by vendor ────────────────────────────────────── -->
+    <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:10px;">
+      Year-over-Year — {{ yoy_month }} Spend by Vendor
+    </div>
+    {% if yoy_rows %}
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead>
+        <tr style="background:#f1f5f9;">
+          <th style="text-align:left;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Vendor</th>
+          {% for y in yoy_years %}
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ y }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in yoy_rows %}
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 10px;color:#1e293b;">{{ row.vendor }}</td>
+          {% for y in yoy_years %}
+          <td style="text-align:right;padding:9px 10px;color:{% if y == current_year %}#1e293b{% else %}#94a3b8{% endif %};">
+            {{ row['y_' ~ y] }}
+          </td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="font-size:12px;color:#94a3b8;padding:8px 0;">Insufficient history for year-over-year comparison.</div>
+    {% endif %}
+
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
+              padding:14px 32px;text-align:center;">
+    <div style="font-size:11px;color:#94a3b8;">
+      Vendors discovered dynamically from COGS-account transactions &nbsp;·&nbsp; {{ report_date }}
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

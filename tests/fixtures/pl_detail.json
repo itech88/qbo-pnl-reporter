@@ -1,0 +1,117 @@
+{
+  "Header": {
+    "ReportName": "ProfitAndLossDetail",
+    "StartPeriod": "2026-01-01",
+    "EndPeriod": "2026-06-30"
+  },
+  "Columns": {
+    "Column": [
+      {"ColTitle": "Date",             "ColType": "tx_date"},
+      {"ColTitle": "Transaction Type", "ColType": "txn_type"},
+      {"ColTitle": "Num",              "ColType": "doc_num"},
+      {"ColTitle": "Name",             "ColType": "name"},
+      {"ColTitle": "Memo/Description", "ColType": "memo"},
+      {"ColTitle": "Split",            "ColType": "split_acc"},
+      {"ColTitle": "Amount",           "ColType": "subt_nat_amount"},
+      {"ColTitle": "Balance",          "ColType": "rbal_nat_amount"}
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "type": "Section",
+        "group": "Income",
+        "Header": {"ColData": [{"value": "Income"}]},
+        "Rows": {
+          "Row": [
+            {
+              "type": "Section",
+              "Header": {"ColData": [{"value": "Sales"}]},
+              "Rows": {
+                "Row": [
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-01-10"}, {"value": "Sales Receipt"}, {"value": ""},
+                    {"value": "Patient A"}, {"value": "exam"}, {"value": "Checking"},
+                    {"value": "5000.00"}, {"value": "5000.00"}
+                  ]}
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "Section",
+        "group": "COGS",
+        "Header": {"ColData": [{"value": "Cost of Goods Sold"}]},
+        "Rows": {
+          "Row": [
+            {
+              "type": "Section",
+              "Header": {"ColData": [{"value": "Supplies & Materials - COGS"}]},
+              "Rows": {
+                "Row": [
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-01-15"}, {"value": "Expense"}, {"value": ""},
+                    {"value": "Alcon"}, {"value": "ALCON VISION LLC"}, {"value": "Chase CC"},
+                    {"value": "2189.45"}, {"value": "2189.45"}
+                  ]},
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-02-12"}, {"value": "Expense"}, {"value": ""},
+                    {"value": "Alcon"}, {"value": "ALCON VISION LLC"}, {"value": "Chase CC"},
+                    {"value": "1500.00"}, {"value": "3689.45"}
+                  ]},
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-01-20"}, {"value": "Expense"}, {"value": ""},
+                    {"value": "ABB Optical"}, {"value": "ABB"}, {"value": "Chase CC"},
+                    {"value": "800.00"}, {"value": "4489.45"}
+                  ]},
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-01-22"}, {"value": "Expense"}, {"value": ""},
+                    {"value": ""}, {"value": "OSRX"}, {"value": "Chase CC"},
+                    {"value": "39.00"}, {"value": "4528.45"}
+                  ]}
+                ]
+              }
+            },
+            {
+              "type": "Section",
+              "Header": {"ColData": [{"value": "Shipping, Freight & Delivery - COS"}]},
+              "Rows": {
+                "Row": [
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-02-05"}, {"value": "Expense"}, {"value": ""},
+                    {"value": "ABB Optical"}, {"value": "freight"}, {"value": "Chase CC"},
+                    {"value": "120.00"}, {"value": "120.00"}
+                  ]}
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "type": "Section",
+        "group": "Expenses",
+        "Header": {"ColData": [{"value": "Expenses"}]},
+        "Rows": {
+          "Row": [
+            {
+              "type": "Section",
+              "Header": {"ColData": [{"value": "Office expenses"}]},
+              "Rows": {
+                "Row": [
+                  {"type": "Data", "ColData": [
+                    {"value": "2026-01-08"}, {"value": "Expense"}, {"value": ""},
+                    {"value": "Amazon"}, {"value": "supplies"}, {"value": "Chase CC"},
+                    {"value": "29.91"}, {"value": "29.91"}
+                  ]}
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
