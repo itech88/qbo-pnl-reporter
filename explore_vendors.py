@@ -1,9 +1,8 @@
 """
-Vendor exploration — uses the Reports API (same path as P&L) to pull
-TransactionListByVendor data. Avoids the Query API cluster routing issue.
-Run via GitHub Actions workflow: explore_vendors.yml
+Vendor exploration phase 2 — pull full vendor list and test monthly summarization.
 """
 import os
+from collections import defaultdict
 from dotenv import load_dotenv
 load_dotenv()
 from auth import get_session
@@ -15,52 +14,65 @@ report_url = f"{_base_url()}/v3/company/{_realm_id()}/reports"
 def get_report(name, params=None):
     r = session.get(f"{report_url}/{name}", params=params or {}, timeout=30)
     if not r.ok:
-        print(f"  HTTP {r.status_code} on {name}: {r.text[:300]}")
+        print(f"  HTTP {r.status_code}: {r.text[:300]}")
         return None
     return r.json()
 
-# ── 1. TransactionListByVendor ──────────────────────────────────────────────
-print("\n── TransactionListByVendor (Jan-May 2026) ──")
+# ── Full vendor list with totals (Jan-May 2026) ──────────────────────────────
+print("\n── All Vendors + Monthly Totals (TransactionListByVendor, Jan-May 2026) ──")
 data = get_report("TransactionListByVendor", {
     "start_date": "2026-01-01",
     "end_date":   "2026-05-31",
 })
 if data:
+    vendor_totals = {}
     rows = data.get("Rows", {}).get("Row", [])
-    print(f"  Top-level rows: {len(rows)}")
-    for row in rows[:5]:
-        rtype = row.get("type", "?")
-        if rtype == "Section":
-            header = row.get("Header", {}).get("ColData", [{}])[0].get("value", "")
-            print(f"  SECTION: {header}")
-            inner = row.get("Rows", {}).get("Row", [])
-            for ir in inner[:3]:
-                cols = [c.get("value","") for c in ir.get("ColData", [])]
-                print(f"    {cols}")
+    print(f"Total vendor sections: {len(rows)}")
+    for row in rows:
+        if row.get("type") == "Section":
+            vendor = row.get("Header", {}).get("ColData", [{}])[0].get("value", "")
+            if not vendor:
+                continue
+            total = 0.0
+            for tx in row.get("Rows", {}).get("Row", []):
+                cols = tx.get("ColData", [])
+                if len(cols) >= 7:
+                    try:
+                        total += float(cols[6].get("value", 0) or 0)
+                    except (ValueError, TypeError):
+                        pass
+            vendor_totals[vendor] = total
 
-# ── 2. VendorBalance ────────────────────────────────────────────────────────
-print("\n── VendorBalance ──")
-data2 = get_report("VendorBalance", {
-    "start_date": "2026-01-01",
-    "end_date":   "2026-05-31",
-})
-if data2:
-    rows2 = data2.get("Rows", {}).get("Row", [])
-    print(f"  Top-level rows: {len(rows2)}")
-    for row in rows2[:10]:
-        cols = [c.get("value","") for c in row.get("ColData", [])]
-        if cols and cols[0]:
-            print(f"  {cols}")
+    for vendor, total in sorted(vendor_totals.items(), key=lambda x: -x[1]):
+        print(f"  {vendor:<45} ${total:>10,.2f}")
 
-# ── 3. AgedPayables ─────────────────────────────────────────────────────────
-print("\n── AgedPayables (to see vendor names) ──")
-data3 = get_report("AgedPayables", {"report_date": "2026-05-31"})
-if data3:
-    rows3 = data3.get("Rows", {}).get("Row", [])
-    print(f"  Top-level rows: {len(rows3)}")
-    for row in rows3[:10]:
-        rtype = row.get("type","")
-        if rtype == "Data":
-            cols = [c.get("value","") for c in row.get("ColData",[])]
-            if cols and cols[0]:
-                print(f"  {cols}")
+# ── Test: monthly breakdown for one vendor (Alcon) ───────────────────────────
+print("\n── Monthly breakdown for Alcon (by parsing transaction dates) ──")
+if data:
+    monthly = defaultdict(float)
+    for row in rows:
+        if row.get("type") == "Section":
+            vendor = row.get("Header", {}).get("ColData", [{}])[0].get("value", "")
+            if "alcon" not in vendor.lower():
+                continue
+            for tx in row.get("Rows", {}).get("Row", []):
+                cols = tx.get("ColData", [])
+                if len(cols) >= 7:
+                    date_str = cols[0].get("value", "")
+                    try:
+                        month = int(date_str.split("-")[1])
+                        amount = float(cols[6].get("value", 0) or 0)
+                        monthly[month] += amount
+                    except (ValueError, IndexError, TypeError):
+                        pass
+    for m, amt in sorted(monthly.items()):
+        from datetime import datetime
+        mn = datetime(2000, m, 1).strftime("%b")
+        print(f"  {mn}: ${amt:,.2f}")
+
+# ── Column headers ────────────────────────────────────────────────────────────
+print("\n── Column headers from TransactionListByVendor ──")
+if data:
+    cols = data.get("Columns", {}).get("Column", [])
+    for i, c in enumerate(cols):
+        print(f"  [{i}] {c.get('ColTitle','?')!r}  type={c.get('ColType','?')}")
