@@ -1,0 +1,28 @@
+name: Explore Vendors (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Run vendor exploration
+        env:
+          QBO_CLIENT_ID:     ${{ secrets.QBO_CLIENT_ID }}
+          QBO_CLIENT_SECRET: ${{ secrets.QBO_CLIENT_SECRET }}
+          QBO_REDIRECT_URI:  ${{ secrets.QBO_REDIRECT_URI }}
+          QBO_REALM_ID:      ${{ secrets.QBO_REALM_ID }}
+          QBO_ACCESS_TOKEN:  ${{ secrets.QBO_ACCESS_TOKEN }}
+          QBO_REFRESH_TOKEN: ${{ secrets.QBO_REFRESH_TOKEN }}
+          QBO_TOKEN_EXPIRY:  ${{ secrets.QBO_TOKEN_EXPIRY }}
+          QBO_ENVIRONMENT:   production
+        run: python explore_vendors.py
