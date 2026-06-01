@@ -51,10 +51,18 @@ jobs:
           SENDGRID_API_KEY:   ${{ secrets.SENDGRID_API_KEY }}
           COGS_VARIANCE_THRESHOLD: ${{ secrets.COGS_VARIANCE_THRESHOLD }}
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            python scheduler.py --force --dry-run
+          # Scheduled runs respect each report's trigger_days (so the scorecard
+          # stays 1st-only). Manual dispatches force-run all reports regardless
+          # of the date for on-demand testing.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            FORCE=""
           else
-            python scheduler.py --force
+            FORCE="--force"
+          fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python scheduler.py $FORCE --dry-run
+          else
+            python scheduler.py $FORCE
           fi
 
       - name: Upload preview (dry run only)
