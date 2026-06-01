@@ -1,0 +1,7 @@
+name: "Home Office Supplies"
+subject: "Home Office Supplies — {month} {year}"
+extraction:
+  type: line_item
+  account_name: "Home Office Supplies"
+metric: both
+email_to: mtbpalmdale@gmail.com

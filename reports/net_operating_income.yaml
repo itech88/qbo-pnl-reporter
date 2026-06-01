@@ -1,0 +1,7 @@
+name: "Net Operating Income"
+subject: "Net Operating Income — {month} {year}"
+extraction:
+  type: section_summary
+  group: NetOperatingIncome
+metric: both
+email_to: mtbpalmdale@gmail.com

@@ -1,0 +1,7 @@
+name: "COGS"
+subject: "COGS Report — {month} {year}"
+extraction:
+  type: section_summary
+  group: COGS
+metric: ratio
+email_to: mtbpalmdale@gmail.com

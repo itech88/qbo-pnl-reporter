@@ -2,9 +2,9 @@ name: Monthly COGS Report
 
 on:
   schedule:
-    # 10:00 AM PST (UTC-8) = 18:00 UTC on the 1st of every month
+    # 10:00 AM PST (UTC-8) = 18:00 UTC on the 1st and 16th of every month
     # Note: fires at 11:00 AM during daylight saving time (PDT = UTC-7)
-    - cron: "0 18 1 * *"
+    - cron: "0 18 1,16 * *"
   workflow_dispatch:
     inputs:
       dry_run:

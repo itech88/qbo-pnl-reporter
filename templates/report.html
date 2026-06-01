@@ -3,40 +3,44 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>COGS Report — {{ current_year }}</title>
+  <title>{{ report_name }} — {{ current_year }}</title>
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
 <div style="max-width:640px;margin:0 auto;padding:24px 16px;">
 
-  <!-- ── Header ─────────────────────────────────────────────── -->
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
   <div style="background:#1e40af;border-radius:8px 8px 0 0;padding:24px 32px;color:#ffffff;">
     <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:1.2px;">Monthly Report</div>
-    <div style="font-size:22px;font-weight:700;margin-top:4px;">COGS Analytics</div>
+    <div style="font-size:22px;font-weight:700;margin-top:4px;">{{ report_name }}</div>
     <div style="font-size:13px;margin-top:10px;opacity:0.8;">{{ report_date }} &nbsp;·&nbsp; {{ current_year }} Year to Date</div>
 
     <!-- Headline stats -->
     <table style="width:100%;margin-top:20px;border-collapse:collapse;">
       <tr>
+        {% if show_income %}
         <td style="width:33%;padding:0 8px 0 0;">
           <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">YTD Income</div>
           <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ stats.ytd_income | currency }}</div>
         </td>
+        {% endif %}
         <td style="width:33%;padding:0 8px;">
-          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">YTD COGS</div>
-          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ stats.ytd_cogs | currency }}</div>
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">YTD {{ value_label }}</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ stats.ytd_value | currency }}</div>
         </td>
+        {% if show_pct %}
         <td style="width:33%;padding:0 0 0 8px;">
-          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Avg COGS %</div>
-          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ stats.avg_cogs_pct | pct }}</div>
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Avg % of Income</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ stats.avg_value_pct | pct }}</div>
         </td>
+        {% endif %}
       </tr>
     </table>
   </div>
 
-  <!-- ── Body ───────────────────────────────────────────────── -->
+  <!-- ── Body ────────────────────────────────────────────────────────────── -->
   <div style="background:#ffffff;padding:28px 32px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
 
-    <!-- Anomaly callout (only rendered when flags exist) -->
+    <!-- Anomaly callout -->
     {% if flags %}
     <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:16px 20px;margin-bottom:24px;">
       <div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:8px;">
@@ -45,8 +49,13 @@
       {% for f in flags %}
       <div style="font-size:12px;color:#7f1d1d;margin-bottom:4px;line-height:1.5;">
         <strong>{{ f.month_name }}:</strong>
-        COGS was {{ f.cogs_pct_current | pct }} vs {{ f.avg_3yr | pct }} 3-yr avg
-        ({{ '+' if f.deviation > 0 else '' }}{{ (f.deviation * 100) | round(1) }}pp &mdash;
+        {% if show_pct %}
+          {{ f.pct_current | pct }} vs {{ f.avg_3yr | pct }} 3-yr avg
+          ({{ '+' if f.deviation > 0 else '' }}{{ (f.deviation * 100) | round(1) }}pp &mdash;
+        {% else %}
+          {{ f.value_current | currency }} vs {{ f.avg_3yr | currency }} 3-yr avg
+          ({{ '+' if f.deviation > 0 else '' }}{{ (f.deviation * 100) | round(1) }}% &mdash;
+        {% endif %}
         <strong>{{ f.direction }}</strong>)
       </div>
       {% endfor %}
@@ -55,11 +64,11 @@
 
     <!-- Chart -->
     <img src="cid:monthly_chart"
-         alt="COGS % of Income chart"
+         alt="{{ report_name }} chart"
          width="576"
          style="width:100%;max-width:576px;border-radius:6px;display:block;margin-bottom:28px;">
 
-    <!-- ── Month-over-month table ─────────────────────────── -->
+    <!-- ── Month-over-month table ──────────────────────────────────────── -->
     <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:10px;">
       {{ current_year }} Month-by-Month
     </div>
@@ -67,32 +76,40 @@
       <thead>
         <tr style="background:#f1f5f9;">
           <th style="text-align:left;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Month</th>
+          {% if show_income %}
           <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Income</th>
-          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">COGS</th>
-          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">COGS %</th>
+          {% endif %}
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ value_label }}</th>
+          {% if show_pct %}
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">% of Income</th>
+          {% endif %}
         </tr>
       </thead>
       <tbody>
         {% for row in mom_rows %}
         <tr style="border-bottom:1px solid #f1f5f9;">
           <td style="padding:9px 10px;color:#1e293b;">{{ row.month_name }}</td>
+          {% if show_income %}
           <td style="text-align:right;padding:9px 10px;color:#475569;">{{ row.income | currency }}</td>
-          <td style="text-align:right;padding:9px 10px;color:#475569;">{{ row.cogs | currency }}</td>
+          {% endif %}
+          <td style="text-align:right;padding:9px 10px;color:#475569;">{{ row.value | currency }}</td>
+          {% if show_pct %}
           <td style="text-align:right;padding:9px 10px;font-weight:700;color:{{ row.pct_color }};">
-            {{ row.cogs_pct | pct }}
+            {{ row.value_pct | pct }}
           </td>
+          {% endif %}
         </tr>
         {% else %}
         <tr>
-          <td colspan="4" style="padding:12px 10px;color:#94a3b8;font-size:12px;">No income data for {{ current_year }} yet.</td>
+          <td colspan="4" style="padding:12px 10px;color:#94a3b8;font-size:12px;">No data for {{ current_year }} yet.</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
 
-    <!-- ── Year-over-year table ───────────────────────────── -->
+    <!-- ── Year-over-year table ────────────────────────────────────────── -->
     <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:10px;">
-      Year-over-Year COGS %
+      Year-over-Year
     </div>
     {% if yoy_rows %}
     <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px;">
@@ -100,7 +117,11 @@
         <tr style="background:#f1f5f9;">
           <th style="text-align:left;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Month</th>
           {% for yr in years %}
-          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ yr }}</th>
+          {% if show_pct %}
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ yr }} %</th>
+          {% else %}
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ yr }} $</th>
+          {% endif %}
           {% endfor %}
         </tr>
       </thead>
@@ -110,25 +131,21 @@
           <td style="padding:9px 10px;color:#1e293b;">{{ row.month_name }}</td>
           {% for yr in years %}
           <td style="text-align:right;padding:9px 10px;color:{% if yr == current_year | string %}#1e293b{% else %}#94a3b8{% endif %};">
-            {{ row['pct_' ~ yr] }}
+            {% if show_pct %}{{ row['pct_' ~ yr] }}{% else %}{{ row['val_' ~ yr] }}{% endif %}
           </td>
           {% endfor %}
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    <div style="font-size:11px;color:#94a3b8;margin-bottom:0;">
-      &mdash; &nbsp; no data for that month
-    </div>
+    <div style="font-size:11px;color:#94a3b8;margin-bottom:0;">&mdash; &nbsp; no data for that month</div>
     {% else %}
-    <div style="font-size:12px;color:#94a3b8;padding:8px 0;">
-      Insufficient historical data for year-over-year comparison.
-    </div>
+    <div style="font-size:12px;color:#94a3b8;padding:8px 0;">Insufficient historical data for comparison.</div>
     {% endif %}
 
   </div>
 
-  <!-- ── Footer ─────────────────────────────────────────────── -->
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
   <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
               padding:14px 32px;text-align:center;">
     <div style="font-size:11px;color:#94a3b8;">

@@ -1,0 +1,7 @@
+name: "Payroll Expense Home Office Reimbursement"
+subject: "Payroll Home Office — {month} {year}"
+extraction:
+  type: line_item
+  account_name: "Payroll Expense Home Office Reimbursement"
+metric: both
+email_to: mtbpalmdale@gmail.com

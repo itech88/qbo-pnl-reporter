@@ -29,12 +29,11 @@ def _default_subject() -> str:
     return f"COGS Report — {datetime.now().strftime('%B %Y')}"
 
 
-def _build_mime(subject: str, html: str, chart_png: bytes) -> MIMEMultipart:
-    # multipart/related allows the HTML to reference the image by CID
+def _build_mime(subject: str, html: str, chart_png: bytes, email_to: str) -> MIMEMultipart:
     msg = MIMEMultipart("related")
     msg["Subject"] = subject
-    msg["From"] = os.environ["EMAIL_FROM"]
-    msg["To"] = os.environ["EMAIL_TO"]
+    msg["From"]    = os.environ["EMAIL_FROM"]
+    msg["To"]      = email_to
     msg.attach(MIMEText(html, "html"))
 
     img = MIMEImage(chart_png, "png")
@@ -48,13 +47,13 @@ def _build_mime(subject: str, html: str, chart_png: bytes) -> MIMEMultipart:
 # SMTP backend
 # ---------------------------------------------------------------------------
 
-def _send_smtp(subject: str, html: str, chart_png: bytes) -> None:
+def _send_smtp(subject: str, html: str, chart_png: bytes, email_to: str) -> None:
     host     = os.environ["SMTP_HOST"]
     port     = int(os.getenv("SMTP_PORT", "587"))
     user     = os.environ["SMTP_USER"]
     password = os.environ["SMTP_PASSWORD"]
 
-    msg = _build_mime(subject, html, chart_png)
+    msg = _build_mime(subject, html, chart_png, email_to)
     context = ssl.create_default_context()
 
     with smtplib.SMTP(host, port, timeout=30) as server:
@@ -70,7 +69,7 @@ def _send_smtp(subject: str, html: str, chart_png: bytes) -> None:
 # SendGrid backend
 # ---------------------------------------------------------------------------
 
-def _send_sendgrid(subject: str, html: str, chart_png: bytes) -> None:
+def _send_sendgrid(subject: str, html: str, chart_png: bytes, email_to: str) -> None:
     import base64
     from sendgrid import SendGridAPIClient
     from sendgrid.helpers.mail import (
@@ -79,7 +78,7 @@ def _send_sendgrid(subject: str, html: str, chart_png: bytes) -> None:
 
     message = Mail(
         from_email=os.environ["EMAIL_FROM"],
-        to_emails=os.environ["EMAIL_TO"],
+        to_emails=email_to,
         subject=subject,
         html_content=html,
     )
@@ -100,7 +99,7 @@ def _send_sendgrid(subject: str, html: str, chart_png: bytes) -> None:
 # AWS SES backend
 # ---------------------------------------------------------------------------
 
-def _send_ses(subject: str, html: str, chart_png: bytes) -> None:
+def _send_ses(subject: str, html: str, chart_png: bytes, email_to: str) -> None:
     import boto3
 
     client = boto3.client(
@@ -111,7 +110,7 @@ def _send_ses(subject: str, html: str, chart_png: bytes) -> None:
     )
     response = client.send_email(
         Source=os.environ["EMAIL_FROM"],
-        Destination={"ToAddresses": os.environ["EMAIL_TO"].split(",")},
+        Destination={"ToAddresses": email_to.split(",")},
         Message={
             "Subject": {"Data": subject, "Charset": "UTF-8"},
             "Body":    {"Html": {"Data": html, "Charset": "UTF-8"}},
@@ -131,10 +130,16 @@ _BACKENDS = {
 }
 
 
-def send_report(html: str, chart_png: bytes, subject: str | None = None) -> None:
+def send_report(
+    html: str,
+    chart_png: bytes,
+    subject: str | None = None,
+    email_to: str | None = None,
+) -> None:
     """
     Deliver the HTML report with the chart embedded as an inline CID attachment.
     Provider is selected by EMAIL_PROVIDER in .env (smtp | sendgrid | ses).
+    email_to overrides EMAIL_TO in .env — used for per-report recipients.
     """
     provider = os.getenv("EMAIL_PROVIDER", "smtp").lower().strip()
     if provider not in _BACKENDS:
@@ -142,8 +147,9 @@ def send_report(html: str, chart_png: bytes, subject: str | None = None) -> None
             f"Unknown EMAIL_PROVIDER '{provider}'. Choose from: {', '.join(_BACKENDS)}"
         )
 
-    subject = subject or _default_subject()
-    _BACKENDS[provider](subject, html, chart_png)
+    subject  = subject  or _default_subject()
+    email_to = email_to or os.environ["EMAIL_TO"]
+    _BACKENDS[provider](subject, html, chart_png, email_to)
 
 
 # ---------------------------------------------------------------------------
