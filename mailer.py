@@ -152,6 +152,36 @@ def send_report(
     _BACKENDS[provider](subject, html, chart_png, email_to)
 
 
+def send_failure_alert(subject: str, body: str, email_to: str | None = None) -> bool:
+    """
+    Send a short plain-text failure alert via SMTP. Best-effort: returns True on
+    success, False on any failure, and never raises — alerting must not crash the
+    caller. No-op (returns False) if SMTP credentials are not configured.
+    """
+    required = ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM")
+    if any(not os.getenv(k) for k in required):
+        return False
+
+    recipient = email_to or os.getenv("EMAIL_TO") or os.environ["EMAIL_FROM"]
+    msg = MIMEText(body, "plain")
+    msg["Subject"] = subject
+    msg["From"]    = os.environ["EMAIL_FROM"]
+    msg["To"]      = recipient
+
+    try:
+        host = os.environ["SMTP_HOST"]
+        port = int(os.getenv("SMTP_PORT", "587"))
+        with smtplib.SMTP(host, port, timeout=30) as server:
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
+            server.sendmail(msg["From"], recipient.split(","), msg.as_string())
+        return True
+    except Exception as exc:  # noqa: BLE001 — alerting is strictly best-effort
+        print(f"[alert] Failed to send failure alert: {exc}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # CLI dry-run — prints what would be sent without delivering
 # ---------------------------------------------------------------------------

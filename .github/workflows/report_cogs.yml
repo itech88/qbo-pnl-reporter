@@ -35,6 +35,7 @@ jobs:
           QBO_REFRESH_TOKEN:       ${{ secrets.QBO_REFRESH_TOKEN }}
           QBO_TOKEN_EXPIRY:        ${{ secrets.QBO_TOKEN_EXPIRY }}
           QBO_ENVIRONMENT:         production
+          GH_PAT:                  ${{ secrets.GH_PAT }}
           EMAIL_PROVIDER:          ${{ secrets.EMAIL_PROVIDER }}
           EMAIL_FROM:              ${{ secrets.EMAIL_FROM }}
           EMAIL_TO:                ${{ secrets.EMAIL_TO }}

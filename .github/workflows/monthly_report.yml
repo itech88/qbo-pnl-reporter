@@ -15,8 +15,28 @@ on:
 jobs:
   send-report:
     runs-on: ubuntu-latest
+    # Job-level env so both the pipeline step and the failure-notify step see
+    # the SMTP/QBO secrets.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      QBO_CLIENT_ID:           ${{ secrets.QBO_CLIENT_ID }}
+      QBO_CLIENT_SECRET:       ${{ secrets.QBO_CLIENT_SECRET }}
+      QBO_REDIRECT_URI:        ${{ secrets.QBO_REDIRECT_URI }}
+      QBO_REALM_ID:            ${{ secrets.QBO_REALM_ID }}
+      QBO_ACCESS_TOKEN:        ${{ secrets.QBO_ACCESS_TOKEN }}
+      QBO_REFRESH_TOKEN:       ${{ secrets.QBO_REFRESH_TOKEN }}
+      QBO_TOKEN_EXPIRY:        ${{ secrets.QBO_TOKEN_EXPIRY }}
+      QBO_ENVIRONMENT:         production
+      GH_PAT:                  ${{ secrets.GH_PAT }}
+      EMAIL_PROVIDER:          ${{ secrets.EMAIL_PROVIDER }}
+      EMAIL_FROM:              ${{ secrets.EMAIL_FROM }}
+      EMAIL_TO:                ${{ secrets.EMAIL_TO }}
+      SMTP_HOST:               ${{ secrets.SMTP_HOST }}
+      SMTP_PORT:               ${{ secrets.SMTP_PORT }}
+      SMTP_USER:               ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD:           ${{ secrets.SMTP_PASSWORD }}
+      SENDGRID_API_KEY:        ${{ secrets.SENDGRID_API_KEY }}
+      COGS_VARIANCE_THRESHOLD: ${{ secrets.COGS_VARIANCE_THRESHOLD }}
 
     steps:
       - name: Checkout
@@ -32,24 +52,6 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run pipeline
-        env:
-          QBO_CLIENT_ID:      ${{ secrets.QBO_CLIENT_ID }}
-          QBO_CLIENT_SECRET:  ${{ secrets.QBO_CLIENT_SECRET }}
-          QBO_REDIRECT_URI:   ${{ secrets.QBO_REDIRECT_URI }}
-          QBO_REALM_ID:       ${{ secrets.QBO_REALM_ID }}
-          QBO_ACCESS_TOKEN:   ${{ secrets.QBO_ACCESS_TOKEN }}
-          QBO_REFRESH_TOKEN:  ${{ secrets.QBO_REFRESH_TOKEN }}
-          QBO_TOKEN_EXPIRY:   ${{ secrets.QBO_TOKEN_EXPIRY }}
-          QBO_ENVIRONMENT:    production
-          EMAIL_PROVIDER:     ${{ secrets.EMAIL_PROVIDER }}
-          EMAIL_FROM:         ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
-          SMTP_HOST:          ${{ secrets.SMTP_HOST }}
-          SMTP_PORT:          ${{ secrets.SMTP_PORT }}
-          SMTP_USER:          ${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD:      ${{ secrets.SMTP_PASSWORD }}
-          SENDGRID_API_KEY:   ${{ secrets.SENDGRID_API_KEY }}
-          COGS_VARIANCE_THRESHOLD: ${{ secrets.COGS_VARIANCE_THRESHOLD }}
         run: |
           # Scheduled runs respect each report's trigger_days (so the scorecard
           # stays 1st-only). Manual dispatches force-run all reports regardless
@@ -72,3 +74,24 @@ jobs:
           name: preview-report
           path: preview_report.html
           retention-days: 3
+
+      # Infra-level safety net: catches failures the Python process can't
+      # self-report (process killed, dependency install failure, the token
+      # writeback step itself). Python-level failures already send a detailed
+      # in-process alert; this may add a second, generic notification.
+      - name: Notify on failure
+        if: ${{ failure() && github.event.inputs.dry_run != 'true' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from mailer import send_failure_alert
+          send_failure_alert(
+              "QBO Monthly Report workflow FAILED",
+              "The scheduled QBO report workflow failed.\n\n"
+              "Run: " + os.environ.get("RUN_URL", "") + "\n\n"
+              "Check the Actions logs for details (token refresh, dependency "
+              "install, or a killed process).",
+          )
+          PY

@@ -1,9 +1,11 @@
 """Unit tests for auth.py helpers — no network calls, no token exchange."""
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-from auth import _is_token_expired
+import pytest
+
+from auth import _is_token_expired, _persist_to_github_secrets
 
 
 class TestIsTokenExpired:
@@ -41,3 +43,57 @@ class TestIsTokenExpired:
         fresh = (datetime.now(timezone.utc) + timedelta(minutes=6)).isoformat()
         with patch.dict("os.environ", {"QBO_TOKEN_EXPIRY": fresh}, clear=False):
             assert _is_token_expired() is False
+
+
+class TestPersistToGithubSecrets:
+    """Writeback of rotated tokens to GitHub Secrets — CI-gated, stdin-fed."""
+
+    def test_noop_without_pat(self):
+        env = {"GH_PAT": "", "GITHUB_REPOSITORY": "owner/repo"}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("subprocess.run") as run:
+            _persist_to_github_secrets("acc", "ref", "2026-06-01T00:00:00+00:00")
+            run.assert_not_called()
+
+    def test_noop_without_repo(self):
+        env = {"GH_PAT": "pat123", "GITHUB_REPOSITORY": ""}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("subprocess.run") as run:
+            _persist_to_github_secrets("acc", "ref", "2026-06-01T00:00:00+00:00")
+            run.assert_not_called()
+
+    def test_sets_three_secrets_via_stdin(self):
+        env = {"GH_PAT": "pat123", "GITHUB_REPOSITORY": "owner/repo"}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)) as run:
+            _persist_to_github_secrets("ACC", "REF", "EXP")
+
+        assert run.call_count == 3
+        keys_set, values_fed = set(), set()
+        for call in run.call_args_list:
+            argv = call.args[0]
+            assert argv[:3] == ["gh", "secret", "set"]
+            keys_set.add(argv[3])
+            # value passed via stdin, never in argv
+            assert "--body-file" in argv and "-" in argv
+            assert "--body" not in argv  # not the argv-exposing form
+            values_fed.add(call.kwargs["input"])
+            assert call.kwargs["env"]["GH_TOKEN"] == "pat123"
+        assert keys_set == {"QBO_ACCESS_TOKEN", "QBO_REFRESH_TOKEN", "QBO_TOKEN_EXPIRY"}
+        assert values_fed == {"ACC", "REF", "EXP"}
+
+    def test_token_value_never_in_argv(self):
+        env = {"GH_PAT": "pat123", "GITHUB_REPOSITORY": "owner/repo"}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)) as run:
+            _persist_to_github_secrets("SECRET_ACCESS", "SECRET_REFRESH", "EXP")
+        for call in run.call_args_list:
+            assert "SECRET_ACCESS" not in call.args[0]
+            assert "SECRET_REFRESH" not in call.args[0]
+
+    def test_gh_missing_is_handled(self):
+        env = {"GH_PAT": "pat123", "GITHUB_REPOSITORY": "owner/repo"}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("subprocess.run", side_effect=FileNotFoundError()):
+            # Must not raise
+            _persist_to_github_secrets("acc", "ref", "exp")

@@ -44,16 +44,66 @@ ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
 # ---------------------------------------------------------------------------
 
 
+def _persist_to_github_secrets(
+    access_token: str, refresh_token: str, expiry_iso: str
+) -> None:
+    """
+    In CI, write the rotated tokens back to GitHub repository secrets so the
+    next scheduled run reads the current refresh token.
+
+    Intuit rotates the refresh token on a ~24h rolling window. On an ephemeral
+    runner the .env write is discarded, so without this the stored secret goes
+    stale and a later run fails with invalid_grant.
+
+    No-op unless both GH_PAT (a PAT with secrets:write) and GITHUB_REPOSITORY
+    are present — i.e. only runs in CI, never locally.
+    """
+    pat  = os.getenv("GH_PAT", "")
+    repo = os.getenv("GITHUB_REPOSITORY", "")
+    if not pat or not repo:
+        return
+
+    import subprocess
+
+    env = {**os.environ, "GH_TOKEN": pat}
+    secrets = {
+        "QBO_ACCESS_TOKEN":  access_token,
+        "QBO_REFRESH_TOKEN": refresh_token,
+        "QBO_TOKEN_EXPIRY":  expiry_iso,
+    }
+    for key, value in secrets.items():
+        try:
+            # Pass the value via stdin (--body-file -) rather than --body so the
+            # token never appears in the process argument list on the runner.
+            subprocess.run(
+                ["gh", "secret", "set", key, "--repo", repo, "--body-file", "-"],
+                input=value, env=env, check=True,
+                capture_output=True, text=True, timeout=30,
+            )
+        except FileNotFoundError:
+            log.error("gh CLI not found — cannot persist %s to GitHub Secrets.", key)
+            return
+        except subprocess.CalledProcessError as e:
+            log.error("Failed to persist %s to GitHub Secrets: %s", key, (e.stderr or "").strip())
+            return
+        except subprocess.TimeoutExpired:
+            log.error("Timed out persisting %s to GitHub Secrets.", key)
+            return
+    log.info("Rotated tokens persisted to GitHub Secrets (repo=%s).", repo)
+
+
 def _save_tokens(access_token: str, refresh_token: str, expires_in: int) -> None:
-    """Persist tokens and expiry to the .env file."""
+    """Persist tokens and expiry to the .env file, and (in CI) to GitHub Secrets."""
     expiry = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    expiry_iso = expiry.isoformat()
     set_key(ENV_FILE, "QBO_ACCESS_TOKEN", access_token)
     set_key(ENV_FILE, "QBO_REFRESH_TOKEN", refresh_token)
-    set_key(ENV_FILE, "QBO_TOKEN_EXPIRY", expiry.isoformat())
+    set_key(ENV_FILE, "QBO_TOKEN_EXPIRY", expiry_iso)
     os.environ["QBO_ACCESS_TOKEN"] = access_token
     os.environ["QBO_REFRESH_TOKEN"] = refresh_token
-    os.environ["QBO_TOKEN_EXPIRY"] = expiry.isoformat()
+    os.environ["QBO_TOKEN_EXPIRY"] = expiry_iso
     log.info("Tokens saved — access token expires %s", expiry.strftime("%Y-%m-%d %H:%M:%S UTC"))
+    _persist_to_github_secrets(access_token, refresh_token, expiry_iso)
 
 
 def _is_token_expired() -> bool:

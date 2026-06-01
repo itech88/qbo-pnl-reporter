@@ -152,7 +152,7 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             total_anomalies += len(flags)
             log.info("[%s]   Built: %s — anomalies=%d", run_id, name, len(flags))
 
-    failures = 0
+    failed_names: list[str] = []
 
     # ── Step 3: Send individual data reports ─────────────────────────────────
     for cfg in send_data:
@@ -166,7 +166,7 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
             _deliver(html, chart_png, subject, cfg, dry_run, run_id)
         except Exception:
-            failures += 1
+            failed_names.append(name)
             log.error("[%s]   FAILED to process report '%s':\n%s",
                       run_id, name, traceback.format_exc())
 
@@ -189,11 +189,11 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                     subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
                     _deliver(html, chart_png, subject, cfg, dry_run, run_id)
                 except Exception:
-                    failures += 1
+                    failed_names.append(name)
                     log.error("[%s]   FAILED vendor report '%s':\n%s",
                               run_id, name, traceback.format_exc())
         except Exception:
-            failures += 1
+            failed_names.append("vendor detail fetch")
             log.error("[%s]   FAILED to fetch vendor detail:\n%s", run_id, traceback.format_exc())
 
     # ── Step 5: Build and send scorecard(s) ──────────────────────────────────
@@ -225,11 +225,12 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             subject = sc_cfg["subject"].format(month=today.strftime("%B"), year=today.year)
             _deliver(html, chart_png, subject, sc_cfg, dry_run, run_id)
         except Exception:
-            failures += 1
+            failed_names.append(sc_cfg["name"])
             log.error("[%s]   FAILED scorecard '%s':\n%s",
                       run_id, sc_cfg["name"], traceback.format_exc())
 
     elapsed = time.monotonic() - started_at
+    failures = len(failed_names)
     total_reports = len(send_data) + len(send_vendor) + len(send_score)
     log.info("━" * 60)
     log.info("EXECUTION COMPLETE — run_id=%s reports=%d failures=%d anomalies=%d duration=%.2fs email_sent=%s",
@@ -238,13 +239,42 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
 
     if failures:
         log.error("[%s] %d report(s) failed — see errors above.", run_id, failures)
+        if not dry_run:
+            _alert_failure(
+                f"QBO reports FAILED ({failures}/{total_reports}) — {today:%b %d %Y}",
+                f"Run {run_id} on the {today:%B %d, %Y} schedule had {failures} "
+                f"failed report(s):\n\n  - " + "\n  - ".join(failed_names) +
+                f"\n\nEnvironment: {env}\nCheck the GitHub Actions run logs "
+                f"(grep run_id={run_id}) for tracebacks and intuit_tid values.",
+            )
         sys.exit(1)
+
+
+def _alert_failure(subject: str, body: str) -> None:
+    """Best-effort failure alert; never raises."""
+    try:
+        from mailer import send_failure_alert
+        if send_failure_alert(subject, body):
+            log.info("Failure alert sent.")
+        else:
+            log.warning("Failure alert not sent (SMTP not configured).")
+    except Exception:
+        log.error("Could not send failure alert:\n%s", traceback.format_exc())
 
 
 if __name__ == "__main__":
     args = _parse_args()
     try:
         run(force=args.force, dry_run=args.dry_run, report_filter=args.report)
+    except SystemExit:
+        raise
     except Exception:
-        log.error("FATAL ERROR — pipeline aborted:\n%s", traceback.format_exc())
+        tb = traceback.format_exc()
+        log.error("FATAL ERROR — pipeline aborted:\n%s", tb)
+        if not args.dry_run:
+            _alert_failure(
+                "QBO reports FATAL ERROR — pipeline aborted",
+                "The report pipeline aborted before completing.\n\n"
+                f"{tb}\n\nCheck the GitHub Actions run logs for details.",
+            )
         sys.exit(1)
