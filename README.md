@@ -48,9 +48,11 @@ logger.py: rotating file + stdout, captures intuit_tid on every API call
 ```
 
 See [docs/solution-architecture.md](docs/solution-architecture.md) and
-[docs/dataflow.md](docs/dataflow.md) for diagrams, and
+[docs/dataflow.md](docs/dataflow.md) for diagrams,
 [docs/business-requirements.md](docs/business-requirements.md) for the use cases
-in Gherkin.
+in Gherkin, and
+[docs/tokenization-and-api-calls.md](docs/tokenization-and-api-calls.md) for a
+plain-language explanation of how API tokens and authentication work here.
 
 ---
 
