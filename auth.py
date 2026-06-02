@@ -73,10 +73,11 @@ def _persist_to_github_secrets(
     }
     for key, value in secrets.items():
         try:
-            # Pass the value via stdin (--body-file -) rather than --body so the
+            # gh reads the secret value from stdin when --body is omitted, so the
             # token never appears in the process argument list on the runner.
+            # (Avoid --body-file, which older gh versions on the runner lack.)
             subprocess.run(
-                ["gh", "secret", "set", key, "--repo", repo, "--body-file", "-"],
+                ["gh", "secret", "set", key, "--repo", repo],
                 input=value, env=env, check=True,
                 capture_output=True, text=True, timeout=30,
             )

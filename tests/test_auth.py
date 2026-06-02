@@ -75,8 +75,8 @@ class TestPersistToGithubSecrets:
             assert argv[:3] == ["gh", "secret", "set"]
             keys_set.add(argv[3])
             # value passed via stdin, never in argv
-            assert "--body-file" in argv and "-" in argv
-            assert "--body" not in argv  # not the argv-exposing form
+            assert "--body" not in argv       # not the argv-exposing form
+            assert "--body-file" not in argv  # unsupported on older runner gh
             values_fed.add(call.kwargs["input"])
             assert call.kwargs["env"]["GH_TOKEN"] == "pat123"
         assert keys_set == {"QBO_ACCESS_TOKEN", "QBO_REFRESH_TOKEN", "QBO_TOKEN_EXPIRY"}
