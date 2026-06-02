@@ -5,5 +5,27 @@ type: vendor_breakdown
 # the ProfitAndLossDetail report. Any vendor posting to a matching account is
 # included automatically — the vendor set is rebuilt from production each run.
 cogs_account_match: "cost of goods"
+
+# Credit-card COGS charges import with the merchant in the memo but no Payee
+# assigned, landing in "Unattributed". With memo_fallback on, the vendor is
+# derived from the memo descriptor so these surface as real suppliers.
+memo_fallback: true
+
+# Canonical names: maps a derived/raw vendor (lowercased) to a clean display
+# name so bill-based and memo-based spellings of the same vendor merge into one
+# row. Extend this as new descriptors appear.
+aliases:
+  "luxottica":              "Luxottica"
+  "coopervision":           "CooperVision"
+  "j&j vision care":        "Johnson & Johnson Vision"
+  "kazak-mars":             "Kazak-Mars"
+  "marchon eyewear":        "Marchon Eyewear"
+  "marchon":                "Marchon Eyewear"
+  "alden optical laborato": "Alden Optical Laboratory"
+  "lkc technologies":       "LKC Technologies"
+  "altair eyewear":         "Altair Eyewear"
+  "eyewear designs":        "Eyewear Designs"
+  "optisource":             "Optisource"
+
 trigger_days: [1, 16]
 email_to: mtbpalmdale@gmail.com

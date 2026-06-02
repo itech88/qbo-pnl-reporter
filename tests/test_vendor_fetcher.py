@@ -10,6 +10,8 @@ from vendor_fetcher import (
     _is_cogs_section,
     _find_cogs_sections,
     _parse_detail,
+    _clean_memo_vendor,
+    _resolve_vendor,
     build_vendor_dataframe,
     _UNATTRIBUTED,
 )
@@ -25,7 +27,13 @@ def pl_detail():
 
 @pytest.fixture
 def cfg():
+    # memo_fallback defaults to True
     return {"cogs_account_match": "cost of goods"}
+
+
+@pytest.fixture
+def cfg_no_fallback():
+    return {"cogs_account_match": "cost of goods", "memo_fallback": False}
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +57,7 @@ class TestColIndices:
         idx = _col_indices(pl_detail)
         assert idx["date"]   == 0
         assert idx["name"]   == 3
+        assert idx["memo"]   == 4
         assert idx["amount"] == 6
 
 
@@ -93,8 +102,8 @@ class TestFindCogsSections:
 # ---------------------------------------------------------------------------
 
 class TestParseDetail:
-    def test_extracts_cogs_transactions_only(self, pl_detail):
-        records = _parse_detail(pl_detail, "cost of goods")
+    def test_extracts_cogs_transactions_only(self, pl_detail, cfg_no_fallback):
+        records = _parse_detail(pl_detail, cfg_no_fallback)
         vendors = {r[2] for r in records}
         # Alcon and ABB are COGS; Amazon (Expenses) and Patient A (Income) excluded
         assert "Alcon" in vendors
@@ -102,22 +111,89 @@ class TestParseDetail:
         assert "Amazon" not in vendors
         assert "Patient A" not in vendors
 
-    def test_unattributed_for_blank_name(self, pl_detail):
-        records = _parse_detail(pl_detail, "cost of goods")
+    def test_unattributed_when_fallback_off(self, pl_detail, cfg_no_fallback):
+        # The OSRX row has a blank Payee; with fallback off it stays Unattributed
+        records = _parse_detail(pl_detail, cfg_no_fallback)
         assert any(v == _UNATTRIBUTED for (_, _, v, _) in records)
 
-    def test_year_month_parsed(self, pl_detail):
-        records = _parse_detail(pl_detail, "cost of goods")
+    def test_year_month_parsed(self, pl_detail, cfg):
+        records = _parse_detail(pl_detail, cfg)
         alcon_jan = [r for r in records if r[2] == "Alcon" and r[1] == 1]
         assert alcon_jan
         assert alcon_jan[0][0] == 2026  # year
 
-    def test_includes_nested_cos_subaccount(self, pl_detail):
+    def test_includes_nested_cos_subaccount(self, pl_detail, cfg):
         # ABB has a Feb shipping (COS) transaction in a second sub-section
-        records = _parse_detail(pl_detail, "cost of goods")
+        records = _parse_detail(pl_detail, cfg)
         abb_feb = [r for r in records if r[2] == "ABB Optical" and r[1] == 2]
         assert abb_feb
         assert abb_feb[0][3] == 120.0
+
+
+# ---------------------------------------------------------------------------
+# Memo fallback + alias resolution
+# ---------------------------------------------------------------------------
+
+class TestCleanMemoVendor:
+    @pytest.mark.parametrize("memo,expected", [
+        ("KAZAK-MARS, INC.",                       "Kazak-Mars"),
+        ("LUXOTTICA USA",                          "Luxottica"),
+        ("MARCHON EYEWEAR",                        "Marchon Eyewear"),
+        ("ALTAIR EYEWEAR",                         "Altair Eyewear"),
+        ("EYEWEAR DESIGNS LTD",                    "Eyewear Designs"),
+        ("COOPERVISION, INC.",                     "Coopervision"),
+        ("J&J*VISION CARE",                        "J&J Vision Care"),
+        ("Optisource XXX-XXX8360 Ny",              "Optisource"),
+        ("Lkc Technologies Inc XXX-XXX-1992 Md",   "Lkc Technologies"),
+        ("Alden Optical Laborato XXX-XX2270 Ny",   "Alden Optical Laborato"),
+    ])
+    def test_descriptor_cleanup(self, memo, expected):
+        assert _clean_memo_vendor(memo) == expected
+
+    def test_empty_memo(self):
+        assert _clean_memo_vendor("") == ""
+        assert _clean_memo_vendor("   ") == ""
+
+    def test_only_noise_returns_empty(self):
+        assert _clean_memo_vendor("XXX-XXX1234 Ny") == ""
+
+
+class TestResolveVendor:
+    def test_name_takes_priority_over_memo(self):
+        assert _resolve_vendor("Alcon", "ALCON VISION LLC", True, {}) == "Alcon"
+
+    def test_memo_used_when_name_blank(self):
+        assert _resolve_vendor("", "LUXOTTICA USA", True, {}) == "Luxottica"
+
+    def test_unattributed_when_no_name_no_memo(self):
+        assert _resolve_vendor("", "", True, {}) == _UNATTRIBUTED
+
+    def test_fallback_disabled_keeps_unattributed(self):
+        assert _resolve_vendor("", "LUXOTTICA USA", False, {}) == _UNATTRIBUTED
+
+    def test_alias_canonicalizes_memo_result(self):
+        aliases = {"coopervision": "CooperVision"}
+        assert _resolve_vendor("", "COOPERVISION, INC.", True, aliases) == "CooperVision"
+
+    def test_alias_merges_bill_name_too(self):
+        # alias applies to explicit names as well, merging bill + memo spellings
+        aliases = {"marchon eyewear": "Marchon Eyewear"}
+        assert _resolve_vendor("Marchon Eyewear", "", True, aliases) == "Marchon Eyewear"
+
+
+class TestMemoFallbackInParse:
+    def test_blank_payee_resolves_via_memo(self, pl_detail, cfg):
+        records = _parse_detail(pl_detail, cfg)
+        vendors = {r[2] for r in records}
+        # OSRX row had blank Payee; memo fallback surfaces it
+        assert "Osrx" in vendors
+        assert _UNATTRIBUTED not in vendors
+
+    def test_alias_applied_in_parse(self, pl_detail):
+        cfg = {"cogs_account_match": "cost of goods",
+               "memo_fallback": True, "aliases": {"osrx": "OSRX Pharmacy"}}
+        records = _parse_detail(pl_detail, cfg)
+        assert any(v == "OSRX Pharmacy" for (_, _, v, _) in records)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +221,9 @@ class TestBuildVendorDataframe:
         # Discovered purely from data, no hardcoded list
         assert "Alcon" in vendors
         assert "ABB Optical" in vendors
-        assert _UNATTRIBUTED in vendors
+        # blank-Payee row surfaced via memo fallback rather than Unattributed
+        assert "Osrx" in vendors
+        assert _UNATTRIBUTED not in vendors
 
     def test_empty_raw_returns_empty_df(self, cfg):
         df = build_vendor_dataframe({}, cfg)

@@ -15,6 +15,7 @@ Public API:
 """
 
 import os
+import re
 from datetime import datetime
 
 import pandas as pd
@@ -31,8 +32,61 @@ log = get_logger(__name__)
 # header in the ProfitAndLossDetail response. Overridable per report config.
 _DEFAULT_COGS_MATCH = "cost of goods"
 
-# Label for transactions posted to COGS with no vendor name attached.
+# Label for transactions posted to COGS with neither a vendor nor a usable memo.
 _UNATTRIBUTED = "Unattributed"
+
+# US state abbreviations and corporate suffixes stripped from bank-feed memos
+# when deriving a vendor name (memo fallback).
+_STATE_ABBR = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL",
+    "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT",
+    "NE", "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI",
+    "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC",
+}
+_CORP_SUFFIXES = {
+    "INC", "LLC", "LTD", "CO", "CORP", "COMPANY", "USA", "US", "LP", "LLP",
+}
+
+
+def _smart_title(text: str) -> str:
+    """Title-case a label while preserving short all-caps acronyms (J&J, LKC)."""
+    def cap(word: str) -> str:
+        core = word.strip(".")
+        if len(core) <= 3 and core.isupper() and any(c.isalpha() for c in core):
+            return word                      # keep acronyms: J&J, LKC
+        return "-".join(p.capitalize() for p in word.split("-"))
+    return " ".join(cap(w) for w in text.split())
+
+
+def _clean_memo_vendor(memo: str) -> str:
+    """
+    Derive a vendor name from a bank-feed memo/descriptor.
+
+    Credit-card COGS charges import with the merchant in the memo but no Payee
+    assigned. This normalizes descriptors like
+        'KAZAK-MARS, INC.'                  -> 'Kazak-Mars'
+        'LUXOTTICA USA'                     -> 'Luxottica'
+        'Alden Optical Laborato XXX-XX2270 Ny' -> 'Alden Optical Laborato'
+    Returns '' if nothing usable remains.
+    """
+    if not memo or not memo.strip():
+        return ""
+
+    tokens = memo.replace("*", " ").replace(",", " ").split()
+    cleaned: list[str] = []
+    for tok in tokens:
+        if "XX" in tok.upper():           # card-masking fragments (XXX-XXX2270)
+            continue
+        if re.fullmatch(r"[#\d\-]+", tok):  # bare transaction/id numbers
+            continue
+        cleaned.append(tok)
+
+    # Strip a trailing state abbreviation, then any corporate suffix tokens.
+    while cleaned and cleaned[-1].upper().strip(".") in _STATE_ABBR:
+        cleaned.pop()
+    cleaned = [t for t in cleaned if t.upper().strip(".") not in _CORP_SUFFIXES]
+
+    return _smart_title(" ".join(cleaned)) if cleaned else ""
 
 
 def _report_url() -> str:
@@ -57,6 +111,8 @@ def _col_indices(data: dict) -> dict[str, int]:
             idx["date"] = i
         elif ctype == "name":
             idx["name"] = i
+        elif ctype == "memo":
+            idx["memo"] = i
         elif ctype == "subt_nat_amount":
             idx["amount"] = i
     return idx
@@ -94,17 +150,41 @@ def _find_cogs_sections(rows: list[dict], cogs_match: str) -> list[dict]:
     return found
 
 
-def _parse_detail(data: dict, cogs_match: str) -> list[tuple[int, int, str, float]]:
+def _resolve_vendor(name: str, memo: str, memo_fallback: bool,
+                    aliases: dict[str, str]) -> str:
+    """
+    Determine the vendor label for a COGS transaction.
+    Priority: explicit Payee/Vendor name → memo-derived name (if enabled) →
+    Unattributed. An alias map (lowercased keys) canonicalizes the result so
+    bill-based and memo-based spellings of the same vendor merge.
+    """
+    vendor = name.strip()
+    if not vendor and memo_fallback:
+        vendor = _clean_memo_vendor(memo)
+    vendor = vendor or _UNATTRIBUTED
+    return aliases.get(vendor.lower(), vendor)
+
+
+def _parse_detail(data: dict, report_config: dict) -> list[tuple[int, int, str, float]]:
     """
     Parse one ProfitAndLossDetail response.
     Returns a list of (year, month, vendor, amount) tuples for COGS transactions.
+
+    When a transaction has no Payee/Vendor (common for credit-card-fed charges),
+    the vendor is derived from the memo descriptor if `memo_fallback` is enabled
+    (default True). An optional `aliases` map canonicalizes vendor names.
     """
+    cogs_match    = report_config.get("cogs_account_match", _DEFAULT_COGS_MATCH).lower()
+    memo_fallback = report_config.get("memo_fallback", True)
+    aliases       = {k.lower(): v for k, v in (report_config.get("aliases") or {}).items()}
+
     idx = _col_indices(data)
     if "date" not in idx or "amount" not in idx:
         log.warning("ProfitAndLossDetail missing expected columns — got %s", idx)
         return []
 
     name_idx = idx.get("name")
+    memo_idx = idx.get("memo")
     rows = data.get("Rows", {}).get("Row", [])
     sections = _find_cogs_sections(rows, cogs_match)
 
@@ -113,15 +193,14 @@ def _parse_detail(data: dict, cogs_match: str) -> list[tuple[int, int, str, floa
         for cd in _collect_data_rows(sec):
             if len(cd) <= idx["amount"] or len(cd) <= idx["date"]:
                 continue
-            date_str = cd[idx["date"]]
             try:
-                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                dt = datetime.strptime(cd[idx["date"]], "%Y-%m-%d")
             except (ValueError, TypeError):
                 continue
-            vendor = (cd[name_idx].strip() if name_idx is not None and name_idx < len(cd) else "")
-            vendor = vendor or _UNATTRIBUTED
-            amount = _to_float(cd[idx["amount"]])
-            records.append((dt.year, dt.month, vendor, amount))
+            name = cd[name_idx] if name_idx is not None and name_idx < len(cd) else ""
+            memo = cd[memo_idx] if memo_idx is not None and memo_idx < len(cd) else ""
+            vendor = _resolve_vendor(name, memo, memo_fallback, aliases)
+            records.append((dt.year, dt.month, vendor, _to_float(cd[idx["amount"]])))
     return records
 
 
@@ -174,12 +253,10 @@ def build_vendor_dataframe(
     Dynamically includes every vendor that posted to a COGS account in any
     period — the vendor set is rebuilt from the data on every run.
     """
-    cogs_match = report_config.get("cogs_account_match", _DEFAULT_COGS_MATCH).lower()
-
     records: list[tuple[int, int, str, float]] = []
     for responses in raw_by_year.values():
         for data in responses:
-            records.extend(_parse_detail(data, cogs_match))
+            records.extend(_parse_detail(data, report_config))
 
     if not records:
         return pd.DataFrame(columns=["year", "month", "vendor", "amount"])
