@@ -22,7 +22,7 @@ import sys
 import time
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import yaml
 
@@ -237,6 +237,9 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
              run_id, total_reports, failures, total_anomalies, elapsed, not dry_run)
     log.info("━" * 60)
 
+    if not dry_run:
+        _check_pat_expiry(run_id)
+
     if failures:
         log.error("[%s] %d report(s) failed — see errors above.", run_id, failures)
         if not dry_run:
@@ -248,6 +251,67 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                 f"(grep run_id={run_id}) for tracebacks and intuit_tid values.",
             )
         sys.exit(1)
+
+
+def _check_pat_expiry(run_id: str) -> None:
+    """
+    Warn by email when the GH_PAT is within GH_PAT_EXPIRY_WARN_DAYS (default 30)
+    of expiring — or has already expired. The PAT is the one credential that
+    cannot auto-rotate; if it lapses, rotated QBO tokens stop being written back
+    and reporting hard-fails ~15 days later. This turns the documented manual
+    calendar reminder into a self-issued alert.
+
+    Best-effort: no-op locally (no PAT) and never raises. Fires on every live run
+    inside the window, so the twice-monthly schedule nudges until the PAT is
+    rotated. Rotating before expiry avoids the QBO re-bootstrap entirely.
+    """
+    try:
+        from auth import github_pat_expiry
+        expiry = github_pat_expiry()
+        if expiry is None:
+            return  # no PAT (local), unreachable, or non-expiring — nothing to warn
+
+        warn_days = int(os.getenv("GH_PAT_EXPIRY_WARN_DAYS", "30"))
+        days_left = (expiry - datetime.now(timezone.utc)).days
+
+        if days_left > warn_days:
+            log.info("[%s] GH_PAT healthy — %d day(s) to expiry (%s).",
+                     run_id, days_left, expiry.strftime("%Y-%m-%d"))
+            return
+
+        log.warning("[%s] GH_PAT within %d-day window (%d day(s) left) — sending reminder.",
+                    run_id, warn_days, days_left)
+
+        expired = days_left < 0
+        when = expiry.strftime("%Y-%m-%d %H:%M UTC")
+        if expired:
+            subject = "⚠️ GH_PAT has EXPIRED — QBO reporter needs a new token"
+            headline = f"EXPIRED on {when} ({-days_left} day(s) ago)"
+        else:
+            subject = f"⚠️ GH_PAT expires in {days_left} day(s) — QBO reporter needs a new token"
+            headline = f"expires on {when} ({days_left} day(s) from now)"
+
+        body = (
+            f"The GitHub PAT (GH_PAT) used by the QBO P&L reporter {headline}.\n\n"
+            "This PAT is the one credential that cannot auto-rotate. If it lapses, the "
+            "rotated QBO refresh token stops being written back to GitHub Secrets and "
+            "reporting hard-fails about 15 days later (invalid_grant).\n\n"
+            "Rotate it (about 2 minutes — no QBO re-bootstrap needed if done before expiry):\n"
+            "  1. Create a fresh fine-grained PAT scoped to only the qbo-pnl-reporter repo,\n"
+            "     permissions: Secrets = Read and write, Metadata = Read-only.\n"
+            "  2. Update the GH_PAT repository secret with the new value.\n"
+            "  3. Trigger any report manually and confirm the logs show\n"
+            "     'Rotated tokens persisted to GitHub Secrets'.\n\n"
+            f"Run id: {run_id}"
+        )
+
+        from mailer import send_failure_alert
+        if send_failure_alert(subject, body):
+            log.info("[%s] PAT expiry reminder sent.", run_id)
+        else:
+            log.warning("[%s] PAT expiry reminder not sent (SMTP not configured).", run_id)
+    except Exception:
+        log.error("[%s] PAT expiry check failed:\n%s", run_id, traceback.format_exc())
 
 
 def _alert_failure(subject: str, body: str) -> None:

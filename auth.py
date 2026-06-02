@@ -120,6 +120,86 @@ def _is_token_expired() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# GitHub PAT expiry monitoring
+# ---------------------------------------------------------------------------
+
+GITHUB_API_ROOT = "https://api.github.com/"
+_PAT_EXPIRY_HEADER = "github-authentication-token-expiration"
+
+
+def _parse_pat_expiry(raw: str) -> datetime | None:
+    """
+    Parse the github-authentication-token-expiration header into a tz-aware UTC
+    datetime. GitHub emits e.g. '2026-06-30 23:59:59 UTC'; tolerate a numeric
+    offset or ISO-8601 too. Returns None if the value can't be parsed.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+
+    # Common form: "2026-06-30 23:59:59 UTC"
+    if raw.upper().endswith("UTC"):
+        try:
+            naive = datetime.strptime(raw[:-3].strip(), "%Y-%m-%d %H:%M:%S")
+            return naive.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    # Numeric-offset form: "2026-06-30 23:59:59 +0000" / "-0700"
+    for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+
+    # Last resort: ISO-8601 (assume UTC if no offset given)
+    try:
+        dt = datetime.fromisoformat(raw)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def github_pat_expiry() -> datetime | None:
+    """
+    Return the GH_PAT's expiry as a tz-aware UTC datetime, read from GitHub's
+    response header on an authenticated request.
+
+    Best-effort and CI-oriented: returns None when there is no GH_PAT (local
+    runs), when the request fails, when GitHub answers non-200 (e.g. the PAT is
+    already invalid — the writeback path logs that separately), or when the PAT
+    has no expiration (non-expiring classic PATs emit no expiry header). The PAT
+    travels only in the Authorization header and is never logged. Never raises.
+    """
+    pat = os.getenv("GH_PAT", "")
+    if not pat:
+        return None
+
+    try:
+        resp = requests.get(
+            GITHUB_API_ROOT,
+            headers={
+                "Authorization": f"Bearer {pat}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            timeout=15,
+        )
+    except requests.RequestException as exc:
+        log.warning("Could not reach GitHub to check PAT expiry: %s", exc)
+        return None
+
+    if resp.status_code != 200:
+        log.warning("PAT expiry check got HTTP %s from GitHub — skipping.", resp.status_code)
+        return None
+
+    expiry = _parse_pat_expiry(resp.headers.get(_PAT_EXPIRY_HEADER, ""))
+    if expiry is None:
+        log.info("No parseable PAT expiry header (PAT may be non-expiring).")
+    return expiry
+
+
+# ---------------------------------------------------------------------------
 # Token refresh
 # ---------------------------------------------------------------------------
 

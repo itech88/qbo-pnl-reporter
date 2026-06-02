@@ -5,7 +5,12 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from auth import _is_token_expired, _persist_to_github_secrets
+from auth import (
+    _is_token_expired,
+    _persist_to_github_secrets,
+    _parse_pat_expiry,
+    github_pat_expiry,
+)
 
 
 class TestIsTokenExpired:
@@ -97,3 +102,73 @@ class TestPersistToGithubSecrets:
              patch("subprocess.run", side_effect=FileNotFoundError()):
             # Must not raise
             _persist_to_github_secrets("acc", "ref", "exp")
+
+
+class TestParsePatExpiry:
+    """Tolerant parsing of the github-authentication-token-expiration header."""
+
+    def test_utc_suffix_form(self):
+        assert _parse_pat_expiry("2026-06-30 23:59:59 UTC") == \
+            datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+
+    def test_numeric_offset_form(self):
+        assert _parse_pat_expiry("2026-06-30 23:59:59 +0000") == \
+            datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+
+    def test_negative_offset_normalizes_to_utc(self):
+        # 23:59:59 -0700 == 06:59:59 next day UTC
+        assert _parse_pat_expiry("2026-06-30 23:59:59 -0700") == \
+            datetime(2026, 7, 1, 6, 59, 59, tzinfo=timezone.utc)
+
+    def test_iso_form(self):
+        assert _parse_pat_expiry("2026-06-30T23:59:59+00:00") == \
+            datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+
+    def test_garbage_returns_none(self):
+        assert _parse_pat_expiry("not-a-date") is None
+
+    def test_empty_returns_none(self):
+        assert _parse_pat_expiry("") is None
+
+
+class TestGithubPatExpiry:
+    """Reads the PAT expiry from GitHub's response header — CI-gated, best-effort."""
+
+    def test_no_pat_skips_request(self):
+        with patch.dict("os.environ", {"GH_PAT": ""}, clear=False), \
+             patch("auth.requests.get") as get:
+            assert github_pat_expiry() is None
+            get.assert_not_called()
+
+    def test_reads_expiry_header(self):
+        resp = MagicMock(status_code=200,
+                         headers={"github-authentication-token-expiration": "2026-06-30 23:59:59 UTC"})
+        with patch.dict("os.environ", {"GH_PAT": "pat123"}, clear=False), \
+             patch("auth.requests.get", return_value=resp):
+            assert github_pat_expiry() == datetime(2026, 6, 30, 23, 59, 59, tzinfo=timezone.utc)
+
+    def test_missing_header_returns_none(self):
+        resp = MagicMock(status_code=200, headers={})
+        with patch.dict("os.environ", {"GH_PAT": "pat123"}, clear=False), \
+             patch("auth.requests.get", return_value=resp):
+            assert github_pat_expiry() is None
+
+    def test_non_200_returns_none(self):
+        resp = MagicMock(status_code=401, headers={})
+        with patch.dict("os.environ", {"GH_PAT": "pat123"}, clear=False), \
+             patch("auth.requests.get", return_value=resp):
+            assert github_pat_expiry() is None
+
+    def test_request_exception_returns_none(self):
+        import requests
+        with patch.dict("os.environ", {"GH_PAT": "pat123"}, clear=False), \
+             patch("auth.requests.get", side_effect=requests.RequestException("boom")):
+            assert github_pat_expiry() is None
+
+    def test_pat_travels_only_in_auth_header(self):
+        resp = MagicMock(status_code=200,
+                         headers={"github-authentication-token-expiration": "2026-06-30 23:59:59 UTC"})
+        with patch.dict("os.environ", {"GH_PAT": "supersecret"}, clear=False), \
+             patch("auth.requests.get", return_value=resp) as get:
+            github_pat_expiry()
+        assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer supersecret"

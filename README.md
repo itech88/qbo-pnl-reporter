@@ -157,9 +157,16 @@ QBO refresh token is already dead by step 2:
    `Rotated tokens persisted to GitHub Secrets` in the logs and a fresh "Updated"
    timestamp on the secrets.
 
-**Prevention:** set a calendar reminder ~1 month before the PAT's expiry to rotate it
-proactively (rotating before it dies avoids the QBO re-bootstrap entirely — just swap
-the PAT). Consider a 1-year PAT and a recurring reminder.
+**Prevention (now automated):** every live run checks the PAT's own expiry — read
+straight from GitHub's `github-authentication-token-expiration` response header, so
+there is no separate expiry value to maintain — and emails a rotation reminder once
+the PAT is within **30 days** of expiring (tunable via `GH_PAT_EXPIRY_WARN_DAYS`).
+Because the schedule fires on the 1st and 16th, you get a nudge roughly every two
+weeks through the window until you swap the token. Rotating *before* expiry avoids the
+QBO re-bootstrap entirely — just replace the `GH_PAT` secret. Use a fine-grained PAT
+scoped to this repo (Secrets: read/write, Metadata: read-only); a 1-year lifetime plus
+these reminders means you only touch it once a year. The reminder is best-effort and
+CI-only (it needs `GH_PAT`), so local runs never trigger it.
 
 ### Failure alerting
 
@@ -169,6 +176,9 @@ Any failed run emails `EMAIL_TO`:
 - **Infra-level** (`monthly_report.yml`, `if: failure()`): catches failures the
   Python process can't self-report (killed process, dependency install, the writeback
   step). May produce a second, generic notification.
+- **PAT-expiry reminder** (`scheduler._check_pat_expiry`): a *pre*-failure warning —
+  emails when the `GH_PAT` is within `GH_PAT_EXPIRY_WARN_DAYS` (default 30) of expiring,
+  so the un-rotatable credential gets swapped before it can cause the failure above.
 
 ### Adding a new report
 
@@ -189,5 +199,6 @@ appear.
 
 ## Testing
 
-`pytest tests/` — 120 tests, all pure/mocked (no network): parsing, analytics,
-anomaly logic, token-expiry + writeback gating, memo cleanup, and alerting.
+`pytest tests/` — 138 tests, all pure/mocked (no network): parsing, analytics,
+anomaly logic, token-expiry + writeback gating, PAT-expiry parsing + reminder,
+memo cleanup, and alerting.
