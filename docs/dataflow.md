@@ -5,6 +5,11 @@ how the data is shaped at each hop.
 
 ## End-to-end sequence
 
+![End-to-end run — sequence diagram](diagrams/dataflow-sequence.svg)
+
+<details>
+<summary>Diagram source (Mermaid)</summary>
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -60,9 +65,16 @@ sequenceDiagram
     end
 ```
 
+</details>
+
 ## Data transformation pipeline
 
 How a single metric's data is reshaped from raw API JSON to a rendered email:
+
+![Data transformation pipeline](diagrams/dataflow-pipeline.svg)
+
+<details>
+<summary>Diagram source (Mermaid)</summary>
 
 ```mermaid
 flowchart LR
@@ -75,6 +87,8 @@ flowchart LR
 
     RAW --> EXTRACT --> DF --> ANALYSIS --> CTX --> HTML
 ```
+
+</details>
 
 ## Data shapes at each stage
 

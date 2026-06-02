@@ -7,6 +7,11 @@ and the QuickBooks Online ledger (the source of truth).
 
 ## Component diagram
 
+![Solution architecture — component diagram](diagrams/architecture-components.svg)
+
+<details>
+<summary>Diagram source (Mermaid)</summary>
+
 ```mermaid
 flowchart TB
     subgraph Trigger["Trigger layer (GitHub Actions)"]
@@ -71,6 +76,8 @@ flowchart TB
     Fetch -.-> LOG
     SCHED -.-> LOG
 ```
+
+</details>
 
 ## Key architectural decisions
 
