@@ -95,6 +95,22 @@ _VENDOR_CFG = {
     "name": "COGS by Vendor", "subject": "Vendor — {month} {year}",
     "type": "vendor_breakdown", "trigger_days": [1, 16], "email_to": "owner@example.com",
 }
+_GP_CFG = {
+    "name": "Gross Profit", "subject": "GP — {month} {year}", "metric": "both",
+    "higher_is_better": True, "email_to": "owner@example.com", "trigger_days": [1, 16],
+    "extraction": {"type": "section_summary", "group": "GrossProfit"},
+}
+
+# Section values that satisfy the P&L identities and the vendor tie, so a healthy
+# run passes every guardrail. Income − COGS = Gross Profit; GP − OpEx = NOI; the
+# vendor fixture below sums to COGS. The mocked "now" is 2026, so use that year.
+_HEALTHY = {"COGS": 15000.0, "Gross Profit": 35000.0,
+            "Net Operating Income": 15000.0, "Total Operating Expense Ratio": 20000.0}
+
+
+def _healthy_df(cfg):
+    val = _HEALTHY.get(cfg["name"], 2000.0)
+    return pd.DataFrame([{"year": 2026, "month": 1, "income": 50000.0, "value": val}])
 
 
 @pytest.fixture
@@ -105,9 +121,12 @@ def pipe():
     data report + scorecard + vendor report. Tests tweak `pipe['load'].return_value`
     or `pipe['dt'].now.return_value` as needed.
     """
-    vendor_df = pd.DataFrame(
-        {"year": [2026], "month": [1], "vendor": ["Luxottica"], "amount": [1000.0]}
-    )
+    # Vendor detail that ties to COGS (9000 + 6000 = 15000) so the vendor
+    # reconciliation passes on a healthy run.
+    vendor_df = pd.DataFrame([
+        {"year": 2026, "month": 1, "vendor": "Luxottica",    "amount": 9000.0},
+        {"year": 2026, "month": 1, "vendor": "CooperVision", "amount": 6000.0},
+    ])
     with contextlib.ExitStack() as es:
         p = lambda *a, **k: es.enter_context(patch(*a, **k))
         m = {
@@ -115,7 +134,7 @@ def pipe():
                         return_value=[dict(_DATA_CFG), dict(_SCORE_CFG), dict(_VENDOR_CFG)]),
             "dt":     p("scheduler.datetime"),
             "fetch":  p("fetcher.fetch_raw_all", return_value={}),
-            "bdf":    p("fetcher.build_dataframe", return_value=MagicMock()),
+            "bdf":    p("fetcher.build_dataframe", side_effect=lambda raw, cfg: _healthy_df(cfg)),
             "runall": p("analytics.run_all", return_value=(MagicMock(), MagicMock(), [])),
             "cms":    p("analytics.current_month_stats", side_effect=lambda *a, **k: {"primary": 0.3}),
             "report": p("report.build_report", return_value=("<html>", b"PNG")),
@@ -193,3 +212,65 @@ class TestRunOrchestration:
         # the failure email names the failed report
         body = pipe["alert"].call_args.args[1]
         assert "COGS" in body
+
+
+def _bad_cogs_df(value):
+    """build_dataframe side_effect: a poisoned value for COGS, healthy otherwise."""
+    return lambda raw, cfg: pd.DataFrame(
+        [{"year": 2026, "month": 1, "income": 50000.0,
+          "value": value if cfg["name"] == "COGS" else _HEALTHY.get(cfg["name"], 2000.0)}])
+
+
+class TestGuardrails:
+    """Pre-send reconciliation holds the affected report; the rest still send."""
+
+    def test_absurd_ratio_holds_report_and_alerts(self, pipe):
+        pipe["bdf"].side_effect = _bad_cogs_df(300000.0)   # COGS = 600% of income
+        with pytest.raises(SystemExit):
+            scheduler.run(force=True)
+        pipe["report"].assert_not_called()                 # COGS never rendered/sent
+        pipe["alert"].assert_called_once()
+        assert "COGS" in pipe["alert"].call_args.args[1]
+
+    def test_identity_mismatch_holds_both_sides(self, pipe):
+        pipe["load"].return_value = [dict(_DATA_CFG), dict(_GP_CFG), dict(_SCORE_CFG)]
+        pipe["bdf"].side_effect = lambda raw, cfg: pd.DataFrame(
+            [{"year": 2026, "month": 1, "income": 50000.0,
+              "value": {"COGS": 15000.0, "Gross Profit": 99999.0}.get(cfg["name"], 2000.0)}])
+        with pytest.raises(SystemExit):
+            scheduler.run(force=True)                       # 50000-15000 ≠ 99999
+        body = pipe["alert"].call_args.args[1]
+        assert "COGS" in body and "Gross Profit" in body
+
+    def test_vendor_mismatch_holds_vendor_report(self, pipe):
+        # COGS healthy (15000) but vendor detail sums to only 1000 → tie fails
+        pipe["vbdf"].return_value = pd.DataFrame(
+            [{"year": 2026, "month": 1, "vendor": "Luxottica", "amount": 1000.0}])
+        with pytest.raises(SystemExit):
+            scheduler.run(force=True)
+        pipe["report"].assert_called_once()                # COGS still delivered
+        pipe["vendor"].assert_not_called()                 # vendor report withheld
+        assert "COGS by Vendor" in pipe["alert"].call_args.args[1]
+
+    def test_dry_run_reports_holds_without_blocking(self, pipe, tmp_path):
+        pipe["bdf"].side_effect = _bad_cogs_df(300000.0)
+        with patch("scheduler._preview_path",
+                   side_effect=lambda name: str(tmp_path / f"preview_{name}.html")):
+            scheduler.run(force=True, dry_run=True)        # must NOT raise
+        assert list(tmp_path.glob("preview_*.html"))       # previews still written
+        pipe["alert"].assert_not_called()                  # no operator alert in dry run
+
+    def test_heartbeat_ok_on_clean_run(self, pipe):
+        with patch.dict("os.environ", {"HEARTBEAT_URL": "https://hc.example/abc"}, clear=False), \
+             patch("requests.get") as hb:
+            scheduler.run(force=True)
+        hb.assert_called_once()
+        assert hb.call_args.args[0] == "https://hc.example/abc"        # base = success
+
+    def test_heartbeat_fail_on_hold(self, pipe):
+        pipe["bdf"].side_effect = _bad_cogs_df(300000.0)
+        with patch.dict("os.environ", {"HEARTBEAT_URL": "https://hc.example/abc"}, clear=False), \
+             patch("requests.get") as hb, pytest.raises(SystemExit):
+            scheduler.run(force=True)
+        hb.assert_called_once()
+        assert hb.call_args.args[0] == "https://hc.example/abc/fail"   # problem → /fail

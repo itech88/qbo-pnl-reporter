@@ -83,6 +83,34 @@ def _deliver(html: str, chart_png: bytes, subject: str, cfg: dict,
         log.info("[%s]   Email sent → %s", run_id, cfg["email_to"])
 
 
+def _reporting_period(collected: dict[str, tuple]) -> tuple[int, int] | None:
+    """(year, month) of the latest current-year month with income, across the
+    collected reports — the headline period guardrails reconcile. None if no data."""
+    current_year = datetime.now().year
+    latest = None
+    for value in collected.values():
+        df = value[0]
+        active = df[(df["year"] == current_year) & (df["income"] > 0)]
+        if not active.empty:
+            m = int(active["month"].max())
+            latest = m if latest is None else max(latest, m)
+    return (current_year, latest) if latest is not None else None
+
+
+def _section_totals(collected: dict[str, tuple], year: int, month: int) -> dict[str, float]:
+    """Section value (plus the shared income) for the reporting month, keyed by report name."""
+    from guardrails import INCOME
+    totals: dict[str, float] = {}
+    for name, value in collected.items():
+        df = value[0]
+        sub = df[(df["year"] == year) & (df["month"] == month)]
+        if sub.empty:
+            continue
+        totals.setdefault(INCOME, float(sub.iloc[0]["income"]))
+        totals[name] = float(sub.iloc[0]["value"])
+    return totals
+
+
 def run(force: bool = False, dry_run: bool = False, report_filter: str | None = None) -> None:
     today      = datetime.now()
     run_id     = str(uuid.uuid4())[:8]
@@ -152,11 +180,40 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             total_anomalies += len(flags)
             log.info("[%s]   Built: %s — anomalies=%d", run_id, name, len(flags))
 
+    # ── Step 2.5: Pre-send data-quality guardrails ───────────────────────────
+    # Reconcile this pull against QBO's own section totals and the P&L identities
+    # (no stored history). A report that fails its checks is held back from
+    # delivery; the others still send. A dry run only logs what *would* be held.
+    from guardrails import reconcile_identities, report_sanity
+    held: dict[str, list[str]] = {}
+    period = _reporting_period(collected)
+    if period:
+        ry, rm = period
+        totals   = _section_totals(collected, ry, rm)
+        sendable = {c["name"] for c in send_data}
+        for reason, implicated in reconcile_identities(totals):
+            for nm in implicated:
+                if nm in sendable:
+                    held.setdefault(nm, []).append(reason)
+        for cfg in send_data:
+            nm = cfg["name"]
+            if nm in collected:
+                reasons = report_sanity(collected[nm][0], ry, rm, cfg.get("metric", "ratio"))
+                if reasons:
+                    held.setdefault(nm, []).extend(reasons)
+        if held:
+            log.warning("[%s] Guardrails flagged %d report(s) for hold: %s",
+                        run_id, len(held), ", ".join(sorted(held)))
+
     failed_names: list[str] = []
 
     # ── Step 3: Send individual data reports ─────────────────────────────────
     for cfg in send_data:
         name = cfg["name"]
+        if name in held:
+            log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, name, "; ".join(held[name]))
+            if not dry_run:
+                continue   # withhold from the owner (previews still written in a dry run)
         try:
             metric = cfg.get("metric", "ratio")
             _, mom, yoy, flags = collected[name]
@@ -184,6 +241,22 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                     vdf = build_vendor_dataframe(vendor_raw, cfg)
                     log.info("[%s]   %d rows, %d unique vendors",
                              run_id, len(vdf), vdf["vendor"].nunique() if not vdf.empty else 0)
+                    # Guardrail: the per-vendor detail must tie to the COGS summary
+                    if period:
+                        from guardrails import reconcile_vendor
+                        vry, vrm = period
+                        vendor_total = (
+                            float(vdf[(vdf["year"] == vry) & (vdf["month"] == vrm)]["amount"].sum())
+                            if not vdf.empty else 0.0
+                        )
+                        cogs_total = _section_totals(collected, vry, vrm).get("COGS")
+                        vreasons = reconcile_vendor(cogs_total, vendor_total)
+                        if vreasons:
+                            held.setdefault(name, []).extend(vreasons)
+                            log.error("[%s]   GUARDRAIL HOLD — %s: %s",
+                                      run_id, name, "; ".join(vreasons))
+                            if not dry_run:
+                                continue
                     html, chart_png = build_vendor_report(vdf, cfg)
                     log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
                     subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
@@ -203,6 +276,10 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             threshold = float(os.getenv("COGS_VARIANCE_THRESHOLD", "0.05"))
             metrics_data = []
             for metric_name in sc_cfg.get("includes", []):
+                if metric_name in held:
+                    log.warning("[%s]   Scorecard: '%s' held by guardrails — excluding",
+                                run_id, metric_name)
+                    continue
                 if metric_name not in collected:
                     log.warning("[%s]   Scorecard: no data for '%s' — skipping", run_id, metric_name)
                     continue
@@ -231,25 +308,31 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
 
     elapsed = time.monotonic() - started_at
     failures = len(failed_names)
+    held_names = sorted(held)
     total_reports = len(send_data) + len(send_vendor) + len(send_score)
     log.info("━" * 60)
-    log.info("EXECUTION COMPLETE — run_id=%s reports=%d failures=%d anomalies=%d duration=%.2fs email_sent=%s",
-             run_id, total_reports, failures, total_anomalies, elapsed, not dry_run)
+    log.info("EXECUTION COMPLETE — run_id=%s reports=%d held=%d failures=%d anomalies=%d "
+             "duration=%.2fs email_sent=%s",
+             run_id, total_reports, len(held_names), failures, total_anomalies, elapsed, not dry_run)
     log.info("━" * 60)
 
     if not dry_run:
         _check_pat_expiry(run_id)
+        # Dead-man's-switch: a clean run pings OK; any held/failed report pings /fail.
+        _ping_heartbeat(run_id, success=not (failures or held_names))
 
+    if held_names:
+        log.error("[%s] %d report(s) HELD by guardrails (not delivered): %s",
+                  run_id, len(held_names), ", ".join(held_names))
     if failures:
-        log.error("[%s] %d report(s) failed — see errors above.", run_id, failures)
-        if not dry_run:
-            _alert_failure(
-                f"QBO reports FAILED ({failures}/{total_reports}) — {today:%b %d %Y}",
-                f"Run {run_id} on the {today:%B %d, %Y} schedule had {failures} "
-                f"failed report(s):\n\n  - " + "\n  - ".join(failed_names) +
-                f"\n\nEnvironment: {env}\nCheck the GitHub Actions run logs "
-                f"(grep run_id={run_id}) for tracebacks and intuit_tid values.",
-            )
+        log.error("[%s] %d report(s) FAILED — see errors above.", run_id, failures)
+
+    if (failures or held_names) and not dry_run:
+        _alert_problems(today, env, run_id, failed_names, held)
+
+    # Holds fail a live run (so the issue is visible) but never a dry run, which is
+    # only validating; an outright failure exits non-zero in either mode.
+    if failures or (held_names and not dry_run):
         sys.exit(1)
 
 
@@ -312,6 +395,55 @@ def _check_pat_expiry(run_id: str) -> None:
             log.warning("[%s] PAT expiry reminder not sent (SMTP not configured).", run_id)
     except Exception:
         log.error("[%s] PAT expiry check failed:\n%s", run_id, traceback.format_exc())
+
+
+def _ping_heartbeat(run_id: str, success: bool) -> None:
+    """
+    Best-effort dead-man's-switch ping. If HEARTBEAT_URL is set, GET it on a clean
+    run or <url>/fail on a problem run. An external monitor (e.g. healthchecks.io)
+    alerts if an expected ping never arrives — catching the scariest failure mode,
+    where the schedule silently stops firing and there is otherwise no signal at
+    all. No-op without the env var; never raises.
+    """
+    url = os.getenv("HEARTBEAT_URL", "").strip()
+    if not url:
+        return
+    target = url if success else url.rstrip("/") + "/fail"
+    try:
+        import requests
+        requests.get(target, timeout=10)
+        log.info("[%s] Heartbeat pinged (%s).", run_id, "ok" if success else "fail")
+    except Exception as exc:  # noqa: BLE001 — monitoring must never break the run
+        log.warning("[%s] Heartbeat ping failed: %s", run_id, exc)
+
+
+def _alert_problems(today: datetime, env: str, run_id: str,
+                    failed_names: list[str], held: dict[str, list[str]]) -> None:
+    """Email the operator about held and/or failed reports. Best-effort, never raises."""
+    parts: list[str] = []
+    if held:
+        parts.append("HELD by data-quality guardrails (NOT delivered to the owner):")
+        for nm in sorted(held):
+            parts.append(f"  - {nm}")
+            parts.extend(f"      • {r}" for r in held[nm])
+    if failed_names:
+        if parts:
+            parts.append("")
+        parts.append("FAILED with errors:")
+        parts.extend(f"  - {nm}" for nm in failed_names)
+
+    summary = []
+    if held:
+        summary.append(f"{len(held)} held")
+    if failed_names:
+        summary.append(f"{len(failed_names)} failed")
+
+    _alert_failure(
+        f"QBO reports — {', '.join(summary)} ({today:%b %d %Y})",
+        f"Run {run_id} on the {today:%B %d, %Y} schedule had issues; reports that passed "
+        f"their checks were still delivered.\n\n" + "\n".join(parts) +
+        f"\n\nEnvironment: {env}\nCheck the GitHub Actions logs (grep run_id={run_id}).",
+    )
 
 
 def _alert_failure(subject: str, body: str) -> None:

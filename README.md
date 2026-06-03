@@ -66,8 +66,9 @@ plain-language explanation of how API tokens and authentication work here.
 | `analytics.py` | MoM, YoY, anomaly flagging, scorecard stats |
 | `vendor_analytics.py` | Vendor share breakdown, monthly matrix, vendor YoY |
 | `report.py` | Renders HTML + matplotlib charts (report, scorecard, vendor) |
+| `guardrails.py` | **Stateless pre-send reconciliation** — P&L cross-foot identities, vendor-vs-summary tie, per-report sanity bands |
 | `mailer.py` | SMTP / SendGrid / SES delivery (CID inline chart); `send_failure_alert` |
-| `scheduler.py` | Entry point: load configs, fetch once, run each report, alert on failure |
+| `scheduler.py` | Entry point: load configs, fetch once, **guardrail-check, hold bad reports**, run each, alert, heartbeat |
 | `logger.py` | Shared rotating logger |
 | `reports/*.yaml` | Report definitions (extraction type, metric, schedule, recipient) |
 | `templates/*.html` | Email templates |
@@ -102,6 +103,10 @@ Repository secrets required (**Settings → Secrets and variables → Actions**)
 `QBO_ACCESS_TOKEN`, `QBO_REFRESH_TOKEN`, `QBO_TOKEN_EXPIRY`,
 `EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_TO`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
 `SMTP_PASSWORD`, `COGS_VARIANCE_THRESHOLD`, and **`GH_PAT`** (see below).
+
+Optional: `HEARTBEAT_URL` (dead-man's-switch ping target — see below),
+`RECON_TOLERANCE` (guardrail dollar tolerance, default `1.00`),
+`GH_PAT_EXPIRY_WARN_DAYS` (default `30`). All no-op/​default when unset.
 
 The scheduled `monthly_report.yml` respects each report's `trigger_days`; manual
 dispatches force-run all reports for testing.
@@ -180,6 +185,35 @@ Any failed run emails `EMAIL_TO`:
   emails when the `GH_PAT` is within `GH_PAT_EXPIRY_WARN_DAYS` (default 30) of expiring,
   so the un-rotatable credential gets swapped before it can cause the failure above.
 
+### Data-quality guardrails (pre-send reconciliation)
+
+Before any email goes out, `guardrails.py` reconciles the pull **statelessly** — no
+database, no stored prior run. It checks each pull against QBO's *own* authoritative
+totals and the arithmetic of a P&L:
+
+- **Identities:** `Income − COGS = Gross Profit`, `Gross Profit − OpEx = Net Operating Income`.
+- **Cross-report tie:** `Σ(per-vendor COGS detail) ≈ COGS summary` (the two QBO endpoints must agree).
+- **Per-report sanity:** value present, finite, and within a plausible band of income.
+
+A report that fails is **held back from delivery — the others still send** — and the
+operator gets an alert naming the held report(s) and exactly what didn't reconcile
+(policy: hold only the affected report). A live run with any hold exits non-zero; a
+`--dry-run` only logs what *would* be held and still writes all previews. Tolerance is
+`RECON_TOLERANCE` (default `$1.00`).
+
+**When you get a hold alert:** the data didn't reconcile — usually a QBO sync still in
+progress, a mis-mapped account, or (rarely) an extraction change. Re-run after the sync
+settles, or fix the account mapping; the held report sends once it ties.
+
+### Heartbeat (dead-man's-switch)
+
+The scariest failure is **silence** — e.g. GitHub auto-disables scheduled workflows
+after 60 days of repo inactivity, so the cron just stops with no error and no email. To
+catch that, a successful run pings `HEARTBEAT_URL` (and `<url>/fail` on a held/failed
+run). Point it at a free monitor (e.g. **healthchecks.io**) configured to expect a ping
+on the 1st and 16th; if one never arrives, *it* alerts you. Only the scheduled
+all-reports workflow pings, and it no-ops when `HEARTBEAT_URL` is unset.
+
 ### Adding a new report
 
 1. Add `reports/<name>.yaml` (copy an existing one; pick `type` + `metric`).
@@ -199,11 +233,12 @@ appear.
 
 ## Testing
 
-`pytest` — 179 tests, all pure/mocked (no network): parsing, analytics, anomaly
+`pytest` — 200 tests, all pure/mocked (no network): parsing, analytics, anomaly
 logic, **report + scorecard + vendor rendering**, **scheduler orchestration**
-(trigger days, dry-run, fetch-once, partial-failure alerting), token-expiry +
-refresh + 401-retry + writeback gating, PAT-expiry parsing + reminder, memo cleanup,
-and email routing/alerting. ~87% line coverage.
+(trigger days, dry-run, fetch-once, partial-failure alerting), **data-quality
+guardrails** (reconciliation holds + heartbeat), token-expiry + refresh + 401-retry +
+writeback gating, PAT-expiry parsing + reminder, memo cleanup, and email
+routing/alerting. ~87% line coverage.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full suite on
 every push and pull request. For the full regression protocol — including how to

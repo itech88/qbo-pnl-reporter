@@ -37,6 +37,10 @@ jobs:
       SMTP_PASSWORD:           ${{ secrets.SMTP_PASSWORD }}
       SENDGRID_API_KEY:        ${{ secrets.SENDGRID_API_KEY }}
       COGS_VARIANCE_THRESHOLD: ${{ secrets.COGS_VARIANCE_THRESHOLD }}
+      # Dead-man's-switch ping target (e.g. a healthchecks.io URL). Empty until the
+      # secret is set → the heartbeat simply no-ops. Only the scheduled all-reports
+      # workflow pings, so a missed cron is what the monitor detects.
+      HEARTBEAT_URL:           ${{ secrets.HEARTBEAT_URL }}
 
     steps:
       - name: Checkout
