@@ -10,6 +10,8 @@ from auth import (
     _persist_to_github_secrets,
     _parse_pat_expiry,
     github_pat_expiry,
+    refresh_tokens,
+    QBOSession,
 )
 
 
@@ -172,3 +174,74 @@ class TestGithubPatExpiry:
              patch("auth.requests.get", return_value=resp) as get:
             github_pat_expiry()
         assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer supersecret"
+
+
+_REFRESH_ENV = {
+    "QBO_CLIENT_ID":     "cid",
+    "QBO_CLIENT_SECRET": "secret",
+    "QBO_REFRESH_TOKEN": "refresh-old",
+}
+
+
+class TestRefreshTokens:
+    """OAuth refresh — persists rotated tokens, surfaces failures."""
+
+    def test_success_persists_and_returns(self):
+        resp = MagicMock(status_code=200, headers={"intuit_tid": "tid-1"})
+        resp.json.return_value = {
+            "access_token": "new-access", "refresh_token": "new-refresh",
+            "expires_in": 3600, "token_type": "bearer",
+        }
+        with patch.dict("os.environ", _REFRESH_ENV, clear=False), \
+             patch("auth.requests.post", return_value=resp) as post, \
+             patch("auth.set_key"), \
+             patch("auth._persist_to_github_secrets") as persist:
+            token = refresh_tokens()
+        assert token == "new-access"
+        post.assert_called_once()
+        # the rotated refresh token is what gets persisted for the next run
+        assert persist.call_args.args[1] == "new-refresh"
+
+    def test_non_200_raises(self):
+        resp = MagicMock(status_code=400, text="invalid_grant", headers={"intuit_tid": ""})
+        with patch.dict("os.environ", _REFRESH_ENV, clear=False), \
+             patch("auth.requests.post", return_value=resp):
+            with pytest.raises(RuntimeError):
+                refresh_tokens()
+
+    def test_missing_refresh_token_raises(self):
+        env = {**_REFRESH_ENV, "QBO_REFRESH_TOKEN": ""}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("auth.requests.post") as post:
+            with pytest.raises(RuntimeError):
+                refresh_tokens()
+            post.assert_not_called()   # never hits the network without a token
+
+
+def _http(status, tid=""):
+    return MagicMock(status_code=status, headers={"intuit_tid": tid}, text="body")
+
+
+class TestQBOSession:
+    """Transparent token refresh on expiry and on 401."""
+
+    def test_refreshes_when_token_expired(self):
+        with patch.dict("os.environ",
+                        {"QBO_TOKEN_EXPIRY": "", "QBO_ACCESS_TOKEN": "tok"}, clear=False), \
+             patch("auth.refresh_tokens") as refresh, \
+             patch("requests.Session.request", return_value=_http(200)):
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+        refresh.assert_called_once()
+
+    def test_retries_once_on_401(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with patch.dict("os.environ",
+                        {"QBO_TOKEN_EXPIRY": future, "QBO_ACCESS_TOKEN": "tok"}, clear=False), \
+             patch("auth.refresh_tokens") as refresh, \
+             patch("requests.Session.request",
+                   side_effect=[_http(401), _http(200)]) as super_req:
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+        assert super_req.call_count == 2   # original + one retry
+        refresh.assert_called_once()       # refreshed on the 401

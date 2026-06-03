@@ -1,0 +1,33 @@
+name: CI
+
+# Regression gate. Runs the full pytest suite on every push and pull request so
+# broken rendering or orchestration is caught before it can reach the live 1st/16th
+# schedule. All tests are pure/mocked — no secrets, no network, no QBO calls.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run regression suite
+        # Matplotlib uses the headless Agg backend (set in report.py), so the
+        # chart-rendering tests run fine without a display. Coverage is reported
+        # for visibility; no hard floor yet (some network/browser paths in auth.py
+        # are intentionally not unit-tested).
+        run: pytest tests/ -v --cov=. --cov-report=term-missing

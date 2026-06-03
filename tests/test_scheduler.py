@@ -1,7 +1,16 @@
-"""Unit tests for scheduler.py PAT-expiry alerting — no network, mocked email."""
+"""Unit tests for scheduler.py — PAT-expiry alerting + run() orchestration.
 
+No network: every collaborator (fetch, analytics, render, mail) is mocked. Because
+run() imports them locally (`from fetcher import ...`), the patch targets are the
+source modules, not `scheduler.*`.
+"""
+
+import contextlib
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+
+import pandas as pd
+import pytest
 
 import scheduler
 
@@ -59,3 +68,128 @@ class TestCheckPatExpiry:
         with patch("auth.github_pat_expiry", side_effect=RuntimeError("boom")), \
              patch("mailer.send_failure_alert"):
             scheduler._check_pat_expiry("run123")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# run() orchestration
+# ---------------------------------------------------------------------------
+
+_DATA_CFG = {
+    "name": "COGS", "subject": "COGS — {month} {year}", "metric": "ratio",
+    "higher_is_better": False, "email_to": "owner@example.com",
+    "trigger_days": [1, 16],
+    "extraction": {"type": "section_summary", "group": "COGS"},
+}
+_DATA_CFG2 = {
+    "name": "Utilities", "subject": "Utilities — {month} {year}", "metric": "both",
+    "higher_is_better": False, "email_to": "owner@example.com",
+    "trigger_days": [1, 16],
+    "extraction": {"type": "subsection_summary", "header_text": "Utilities"},
+}
+_SCORE_CFG = {
+    "name": "Monthly Business Dashboard", "subject": "Dashboard — {month} {year}",
+    "type": "scorecard", "trigger_days": [1], "email_to": "owner@example.com",
+    "includes": ["COGS"],
+}
+_VENDOR_CFG = {
+    "name": "COGS by Vendor", "subject": "Vendor — {month} {year}",
+    "type": "vendor_breakdown", "trigger_days": [1, 16], "email_to": "owner@example.com",
+}
+
+
+@pytest.fixture
+def pipe():
+    """Patch every external collaborator of run() and yield the mock handles.
+
+    Default date is the 1st (so the scorecard triggers). Default config set is one
+    data report + scorecard + vendor report. Tests tweak `pipe['load'].return_value`
+    or `pipe['dt'].now.return_value` as needed.
+    """
+    vendor_df = pd.DataFrame(
+        {"year": [2026], "month": [1], "vendor": ["Luxottica"], "amount": [1000.0]}
+    )
+    with contextlib.ExitStack() as es:
+        p = lambda *a, **k: es.enter_context(patch(*a, **k))
+        m = {
+            "load":   p("scheduler.load_report_configs",
+                        return_value=[dict(_DATA_CFG), dict(_SCORE_CFG), dict(_VENDOR_CFG)]),
+            "dt":     p("scheduler.datetime"),
+            "fetch":  p("fetcher.fetch_raw_all", return_value={}),
+            "bdf":    p("fetcher.build_dataframe", return_value=MagicMock()),
+            "runall": p("analytics.run_all", return_value=(MagicMock(), MagicMock(), [])),
+            "cms":    p("analytics.current_month_stats", side_effect=lambda *a, **k: {"primary": 0.3}),
+            "report": p("report.build_report", return_value=("<html>", b"PNG")),
+            "score":  p("report.build_scorecard", return_value=("<html>", b"PNG")),
+            "vendor": p("report.build_vendor_report", return_value=("<html>", b"PNG")),
+            "vfetch": p("vendor_fetcher.fetch_vendor_raw_all", return_value={}),
+            "vbdf":   p("vendor_fetcher.build_vendor_dataframe", return_value=vendor_df),
+            "send":   p("mailer.send_report"),
+            "alert":  p("mailer.send_failure_alert", return_value=True),
+        }
+        p("auth.github_pat_expiry", return_value=None)  # PAT check no-ops
+        m["dt"].now.return_value = datetime(2026, 1, 1, 12, 0, 0)  # the 1st
+        yield m
+
+
+class TestRunOrchestration:
+    def test_skips_when_no_trigger_day(self, pipe):
+        pipe["dt"].now.return_value = datetime(2026, 1, 7, 12, 0, 0)  # the 7th
+        scheduler.run(force=False)
+        pipe["fetch"].assert_not_called()
+        pipe["send"].assert_not_called()
+
+    def test_force_runs_all_report_types(self, pipe):
+        pipe["dt"].now.return_value = datetime(2026, 1, 7, 12, 0, 0)  # non-trigger day
+        scheduler.run(force=True)  # --force ignores the date
+        pipe["fetch"].assert_called_once()           # P&L fetched exactly once
+        pipe["report"].assert_called_once()          # the one data report
+        pipe["vendor"].assert_called_once()          # vendor breakdown
+        pipe["score"].assert_called_once()           # scorecard
+        assert pipe["send"].call_count == 3          # data + vendor + scorecard delivered
+
+    def test_fetch_happens_once_across_many_reports(self, pipe):
+        pipe["load"].return_value = [dict(_DATA_CFG), dict(_DATA_CFG2),
+                                     dict(_SCORE_CFG), dict(_VENDOR_CFG)]
+        scheduler.run(force=True)
+        pipe["fetch"].assert_called_once()
+        assert pipe["report"].call_count == 2        # both data reports rendered
+
+    def test_scorecard_included_on_first(self, pipe):
+        pipe["dt"].now.return_value = datetime(2026, 1, 1, 12, 0, 0)
+        scheduler.run(force=False)
+        pipe["score"].assert_called_once()
+
+    def test_scorecard_excluded_on_sixteenth(self, pipe):
+        pipe["dt"].now.return_value = datetime(2026, 1, 16, 12, 0, 0)
+        scheduler.run(force=False)
+        pipe["score"].assert_not_called()            # scorecard is 1st-only
+        pipe["report"].assert_called_once()          # but data reports still send
+
+    def test_single_report_filter(self, pipe):
+        scheduler.run(force=True, report_filter="COGS")
+        pipe["report"].assert_called_once()
+        pipe["vendor"].assert_not_called()
+        pipe["score"].assert_not_called()
+        assert pipe["send"].call_count == 1
+
+    def test_unknown_report_filter_exits(self, pipe):
+        with pytest.raises(SystemExit):
+            scheduler.run(force=True, report_filter="Does Not Exist")
+        pipe["fetch"].assert_not_called()
+
+    def test_dry_run_writes_preview_and_sends_nothing(self, pipe, tmp_path):
+        with patch("scheduler._preview_path",
+                   side_effect=lambda name: str(tmp_path / f"preview_{name}.html")):
+            scheduler.run(force=True, dry_run=True)
+        pipe["send"].assert_not_called()             # no email in dry run
+        written = list(tmp_path.glob("preview_*.html"))
+        assert written                               # previews were written instead
+
+    def test_partial_failure_exits_nonzero_and_alerts(self, pipe):
+        pipe["report"].side_effect = RuntimeError("render boom")
+        with pytest.raises(SystemExit):
+            scheduler.run(force=True)                # live run, one report fails
+        pipe["alert"].assert_called_once()           # operator gets the failure email
+        # the failure email names the failed report
+        body = pipe["alert"].call_args.args[1]
+        assert "COGS" in body

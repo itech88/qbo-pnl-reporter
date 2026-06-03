@@ -199,6 +199,13 @@ appear.
 
 ## Testing
 
-`pytest tests/` — 138 tests, all pure/mocked (no network): parsing, analytics,
-anomaly logic, token-expiry + writeback gating, PAT-expiry parsing + reminder,
-memo cleanup, and alerting.
+`pytest` — 179 tests, all pure/mocked (no network): parsing, analytics, anomaly
+logic, **report + scorecard + vendor rendering**, **scheduler orchestration**
+(trigger days, dry-run, fetch-once, partial-failure alerting), token-expiry +
+refresh + 401-retry + writeback gating, PAT-expiry parsing + reminder, memo cleanup,
+and email routing/alerting. ~87% line coverage.
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the full suite on
+every push and pull request. For the full regression protocol — including how to
+dry-run the whole pipeline against production via GitHub Actions before a deploy —
+see [docs/regression-testing.md](docs/regression-testing.md).

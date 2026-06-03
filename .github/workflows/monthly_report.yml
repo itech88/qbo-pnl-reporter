@@ -67,12 +67,17 @@ jobs:
             python scheduler.py $FORCE
           fi
 
-      - name: Upload preview (dry run only)
+      - name: Upload previews (dry run only)
         if: ${{ github.event.inputs.dry_run == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: preview-report
-          path: preview_report.html
+          # The multi-report scheduler writes preview_<slug>.html per report
+          # (e.g. preview_cogs.html, preview_monthly_business_dashboard.html) —
+          # never a single preview_report.html. Glob them all, and fail loudly
+          # if a dry run produced nothing so the gap can't go silent again.
+          name: preview-reports
+          path: preview_*.html
+          if-no-files-found: error
           retention-days: 3
 
       # Infra-level safety net: catches failures the Python process can't

@@ -1,9 +1,17 @@
 """Unit tests for analytics.py — synthetic DataFrames, no API calls."""
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
-from analytics import mom_analysis, yoy_analysis, flag_anomalies, run_all
+from analytics import (
+    mom_analysis,
+    yoy_analysis,
+    flag_anomalies,
+    run_all,
+    current_month_stats,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -180,3 +188,56 @@ class TestRunAll:
     def test_both_metric_passes_through(self, three_year_df):
         mom, yoy, flags = run_all(three_year_df, metric="both")
         assert "value_pct" in mom.columns
+
+
+# ---------------------------------------------------------------------------
+# current_month_stats — the scorecard's per-metric snapshot
+# ---------------------------------------------------------------------------
+
+# Built relative to "now" so the current-year selection works whenever this runs.
+_CUR_YEAR = datetime.now().year
+_PRIOR_YEARS = [_CUR_YEAR - 2, _CUR_YEAR - 1]
+
+
+class TestCurrentMonthStats:
+    def _df_through_month(self, last_month: int, ratio: float = 0.30):
+        """Full prior-year history; current year has income only through last_month."""
+        rows = [{"year": y, "month": m, "income": 45000, "value": 45000 * ratio}
+                for y in _PRIOR_YEARS for m in range(1, 13)]
+        for m in range(1, 13):
+            inc = 45000 if m <= last_month else 0
+            rows.append({"year": _CUR_YEAR, "month": m, "income": inc, "value": inc * ratio})
+        return _make_df(rows)
+
+    def test_picks_latest_month_with_income(self):
+        # Income posted through May → the just-completed month is reported,
+        # i.e. the prior-month fallback an owner wants on the 1st.
+        stats = current_month_stats(self._df_through_month(5))
+        assert stats is not None
+        assert stats["report_month"] == 5
+        assert stats["report_month_name"] == "May"
+
+    def test_none_when_no_current_year_income(self):
+        assert current_month_stats(self._df_through_month(0)) is None
+
+    def test_deviation_near_zero_when_stable(self):
+        stats = current_month_stats(self._df_through_month(5))
+        assert abs(stats["avg_3yr"] - 0.30) < 0.001
+        assert abs(stats["deviation"]) < 0.001
+
+    def test_deviation_reflects_spike(self):
+        df = self._df_through_month(5)
+        mask = (df["year"] == _CUR_YEAR) & (df["month"] == 5)
+        df.loc[mask, "value"] = 45000 * 0.50          # May jumps to 50% of income
+        stats = current_month_stats(df, metric="ratio")
+        assert stats["deviation"] > 0.15              # ~+20pp vs the 30% average
+
+    def test_ratio_metric_reports_percentage(self):
+        stats = current_month_stats(self._df_through_month(5), metric="ratio")
+        assert stats["use_pct"] is True
+        assert abs(stats["primary"] - 0.30) < 0.001   # primary is the ratio
+
+    def test_absolute_metric_reports_dollars(self):
+        stats = current_month_stats(self._df_through_month(5), metric="absolute")
+        assert stats["use_pct"] is False
+        assert abs(stats["primary"] - 45000 * 0.30) < 1   # primary is the dollar value
