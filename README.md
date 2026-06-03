@@ -201,6 +201,12 @@ operator gets an alert naming the held report(s) and exactly what didn't reconci
 `--dry-run` only logs what *would* be held and still writes all previews. Tolerance is
 `RECON_TOLERANCE` (default `$1.00`).
 
+**Month-to-date:** mid-month, the reporting month is the current, incomplete one — a few
+days of income against a near-full month of expenses makes ratios swing wildly. Those
+figures are **labelled "Month-to-date (partial)"** in the email and delivered (the ratio
+sanity band is relaxed for the current month); the identity and vendor reconciliations
+still apply, so genuinely broken data is still held.
+
 **When you get a hold alert:** the data didn't reconcile — usually a QBO sync still in
 progress, a mis-mapped account, or (rarely) an extraction change. Re-run after the sync
 settles, or fix the account mapping; the held report sends once it ties.
@@ -233,7 +239,7 @@ appear.
 
 ## Testing
 
-`pytest` — 200 tests, all pure/mocked (no network): parsing, analytics, anomaly
+`pytest` — 205 tests, all pure/mocked (no network): parsing, analytics, anomaly
 logic, **report + scorecard + vendor rendering**, **scheduler orchestration**
 (trigger days, dry-run, fetch-once, partial-failure alerting), **data-quality
 guardrails** (reconciliation holds + heartbeat), token-expiry + refresh + 401-retry +

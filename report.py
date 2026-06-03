@@ -234,10 +234,19 @@ def build_report(
 
     chart_png = _build_chart(mom_df, yoy_df, report_config)
 
+    # Partial = the latest month with income is the current calendar month, i.e.
+    # the figures are month-to-date and will change as the month completes.
+    now = datetime.now()
+    _active = mom_df[mom_df["income"] > 0]
+    _report_month = int(_active["month"].max()) if not _active.empty else None
+    partial = _report_month is not None and _report_month == now.month
+
     context = {
         "report_name":   report_config["name"],
         "current_year":  _CURRENT_YEAR,
         "report_date":   datetime.now().strftime("%B %d, %Y"),
+        "partial":       partial,
+        "partial_month": now.strftime("%B %Y"),
         "metric":        metric,
         "show_income":   metric in ("ratio", "both"),
         "show_pct":      metric in ("ratio", "both"),
@@ -316,6 +325,9 @@ def build_vendor_report(
     matrix    = monthly_share_matrix(df, top_n=6)
     yoy       = vendor_yoy(df)
 
+    now = datetime.now()
+    partial = breakdown["year"] == now.year and breakdown["month"] == now.month
+
     chart_png = _vendor_chart(matrix, report_config["name"])
 
     # Pre-format breakdown rows
@@ -341,6 +353,8 @@ def build_vendor_report(
         "report_name":    report_config["name"],
         "report_date":    datetime.now().strftime("%B %d, %Y"),
         "current_year":   _CURRENT_YEAR,
+        "partial":        partial,
+        "partial_month":  now.strftime("%B %Y"),
         "period_label":   f"{breakdown['month_name']} {breakdown['year']}" if breakdown["year"] else "—",
         "total":          _fmt_currency(breakdown["total"]),
         "vendor_count":   len(breakdown["vendors"]),
@@ -440,15 +454,20 @@ def build_scorecard(
     chart_png = _scorecard_chart(metrics)
 
     # Derive the reported month from the first metric that has data
+    now = datetime.now()
     report_month_name = next(
         (m.get("report_month_name", "") for m in metrics if m.get("report_month_name")),
-        datetime.now().strftime("%B"),
+        now.strftime("%B"),
     )
+    _rm = next((m.get("report_month") for m in metrics if m.get("report_month")), None)
+    partial = _rm is not None and _rm == now.month
 
     context = {
-        "report_date":       datetime.now().strftime("%B %d, %Y"),
+        "report_date":       now.strftime("%B %d, %Y"),
         "current_year":      _CURRENT_YEAR,
         "report_month_name": report_month_name,
+        "partial":           partial,
+        "partial_month":     now.strftime("%B %Y"),
         "metrics":           metrics,
         "threshold_pct":     f"{threshold * 100:.0f}",
     }

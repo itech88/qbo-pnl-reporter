@@ -189,6 +189,11 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
     period = _reporting_period(collected)
     if period:
         ry, rm = period
+        # Partial = the reporting month is the current, still-incomplete calendar
+        # month. Mid-month ratios are legitimate month-to-date (labelled by the
+        # renderers), so the ratio sanity band is relaxed; identity + vendor
+        # reconciliation still apply.
+        is_partial = (ry == today.year and rm == today.month)
         totals   = _section_totals(collected, ry, rm)
         sendable = {c["name"] for c in send_data}
         for reason, implicated in reconcile_identities(totals):
@@ -198,7 +203,8 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
         for cfg in send_data:
             nm = cfg["name"]
             if nm in collected:
-                reasons = report_sanity(collected[nm][0], ry, rm, cfg.get("metric", "ratio"))
+                reasons = report_sanity(collected[nm][0], ry, rm,
+                                        cfg.get("metric", "ratio"), partial=is_partial)
                 if reasons:
                     held.setdefault(nm, []).extend(reasons)
         if held:

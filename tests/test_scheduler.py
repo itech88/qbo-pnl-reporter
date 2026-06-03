@@ -108,9 +108,11 @@ _HEALTHY = {"COGS": 15000.0, "Gross Profit": 35000.0,
             "Net Operating Income": 15000.0, "Total Operating Expense Ratio": 20000.0}
 
 
+# Default fixture "now" is 2026-06-16, so month 5 (May) is the last COMPLETE month —
+# guardrail ratio bands apply. Tests that want a partial month set "now" to May.
 def _healthy_df(cfg):
     val = _HEALTHY.get(cfg["name"], 2000.0)
-    return pd.DataFrame([{"year": 2026, "month": 1, "income": 50000.0, "value": val}])
+    return pd.DataFrame([{"year": 2026, "month": 5, "income": 50000.0, "value": val}])
 
 
 @pytest.fixture
@@ -124,8 +126,8 @@ def pipe():
     # Vendor detail that ties to COGS (9000 + 6000 = 15000) so the vendor
     # reconciliation passes on a healthy run.
     vendor_df = pd.DataFrame([
-        {"year": 2026, "month": 1, "vendor": "Luxottica",    "amount": 9000.0},
-        {"year": 2026, "month": 1, "vendor": "CooperVision", "amount": 6000.0},
+        {"year": 2026, "month": 5, "vendor": "Luxottica",    "amount": 9000.0},
+        {"year": 2026, "month": 5, "vendor": "CooperVision", "amount": 6000.0},
     ])
     with contextlib.ExitStack() as es:
         p = lambda *a, **k: es.enter_context(patch(*a, **k))
@@ -146,7 +148,7 @@ def pipe():
             "alert":  p("mailer.send_failure_alert", return_value=True),
         }
         p("auth.github_pat_expiry", return_value=None)  # PAT check no-ops
-        m["dt"].now.return_value = datetime(2026, 1, 1, 12, 0, 0)  # the 1st
+        m["dt"].now.return_value = datetime(2026, 6, 16, 12, 0, 0)  # the 16th; May complete
         yield m
 
 
@@ -214,10 +216,10 @@ class TestRunOrchestration:
         assert "COGS" in body
 
 
-def _bad_cogs_df(value):
+def _bad_cogs_df(value, month=5):
     """build_dataframe side_effect: a poisoned value for COGS, healthy otherwise."""
     return lambda raw, cfg: pd.DataFrame(
-        [{"year": 2026, "month": 1, "income": 50000.0,
+        [{"year": 2026, "month": month, "income": 50000.0,
           "value": value if cfg["name"] == "COGS" else _HEALTHY.get(cfg["name"], 2000.0)}])
 
 
@@ -245,7 +247,7 @@ class TestGuardrails:
     def test_vendor_mismatch_holds_vendor_report(self, pipe):
         # COGS healthy (15000) but vendor detail sums to only 1000 → tie fails
         pipe["vbdf"].return_value = pd.DataFrame(
-            [{"year": 2026, "month": 1, "vendor": "Luxottica", "amount": 1000.0}])
+            [{"year": 2026, "month": 5, "vendor": "Luxottica", "amount": 1000.0}])
         with pytest.raises(SystemExit):
             scheduler.run(force=True)
         pipe["report"].assert_called_once()                # COGS still delivered
@@ -274,3 +276,12 @@ class TestGuardrails:
             scheduler.run(force=True)
         hb.assert_called_once()
         assert hb.call_args.args[0] == "https://hc.example/abc/fail"   # problem → /fail
+
+    def test_partial_month_skips_ratio_band(self, pipe):
+        # Reporting month IS the current month → an absurd ratio is legitimate
+        # month-to-date, so it's delivered (labelled), not held.
+        pipe["load"].return_value = [dict(_DATA_CFG), dict(_SCORE_CFG)]   # no vendor
+        pipe["dt"].now.return_value = datetime(2026, 5, 16, 12, 0, 0)     # May = current
+        pipe["bdf"].side_effect = _bad_cogs_df(300000.0, month=5)        # 600% but MTD
+        scheduler.run(force=True)                                        # must NOT raise
+        pipe["report"].assert_called_once()                             # COGS still delivered

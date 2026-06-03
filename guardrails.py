@@ -53,6 +53,7 @@ def report_sanity(
     year: int,
     month: int,
     metric: str = "ratio",
+    partial: bool = False,
 ) -> list[str]:
     """
     Plausibility checks on a single report's reporting-month row.
@@ -61,6 +62,12 @@ def report_sanity(
     the failure modes that mean "the data is wrong," not "the business had a bad
     month": missing row, non-finite value, or a value that is an implausible
     multiple of income (a hallmark of a broken extraction).
+
+    The ratio band is skipped when `partial` (the reporting month is the current,
+    incomplete calendar month): a few days of income against a near-full month of
+    posted expenses produces large-but-legitimate month-to-date ratios. Structural
+    checks (missing row, non-finite) still apply, as do the identity and vendor
+    reconciliations, which don't depend on the month being complete.
     """
     row = df[(df["year"] == year) & (df["month"] == month)]
     if row.empty:
@@ -76,8 +83,9 @@ def report_sanity(
         reasons.append(f"income is negative ({income:,.2f})")
 
     # A ratio metric whose value is an absurd fraction of income (outside
-    # -200%..200%) is almost certainly a parsing error, not real performance.
-    if metric in ("ratio", "both") and income > 0 and math.isfinite(value):
+    # -200%..200%) is almost certainly a parsing error — but only for a *complete*
+    # month; mid-month, an extreme ratio is just month-to-date and is labelled, not held.
+    if not partial and metric in ("ratio", "both") and income > 0 and math.isfinite(value):
         pct = value / income
         if not (-2.0 <= pct <= 2.0):
             reasons.append(

@@ -6,7 +6,7 @@ for up to two weeks before anyone notices. This runbook is the protocol that kee
 that from happening: a fast unit/regression gate on every change, plus an on-demand
 dry run against real production data before you trust a deploy.
 
-There are **two layers**:
+There are **three layers**:
 
 | Layer | What it proves | Cost | When |
 |---|---|---|---|
@@ -21,7 +21,7 @@ Layers 1–2 are *commit-time* safety (does the code work?); layer 3 is *runtime
 
 ## The baseline (what the suite protects)
 
-200 tests, all pure/mocked (no network). Coverage ~87% overall; the business-facing
+205 tests, all pure/mocked (no network). Coverage ~87% overall; the business-facing
 and orchestration code is the most heavily covered.
 
 | Module | What its tests guarantee |
@@ -112,6 +112,13 @@ P&L identities, no database — before any email goes out:
 A report that fails is **held back; the rest still send**, and you get an alert naming
 the held report and what didn't reconcile. The run log shows `held=N` on the
 `EXECUTION COMPLETE` line, and a live run with any hold exits non-zero.
+
+**Mid-month is expected to be partial.** When the reporting month is the current,
+incomplete month, ratios swing wildly (a few days of income vs a near-full month of
+expenses). Those reports are **labelled "Month-to-date (partial)" and delivered** — the
+ratio band is relaxed for the current month — while the identity and vendor
+reconciliations still apply. So an extreme ratio on the 16th is labelled, not held; a
+ratio that breaks an *identity* is always held.
 
 **When a report is held:** the data didn't tie out — usually a QBO sync still settling, a
 mis-mapped account, or an extraction change. Confirm in QuickBooks, fix the mapping if

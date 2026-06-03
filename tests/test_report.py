@@ -123,6 +123,25 @@ class TestBuildReport:
         assert "COGS" in html
         _assert_valid_png(png)
 
+    def test_partial_current_month_shows_banner(self):
+        # income posted only through the current month → month-to-date label
+        cur_m = datetime.now().month
+        rows = [{"year": _CURRENT_YEAR, "month": m,
+                 "income": 45000 if m <= cur_m else 0,
+                 "value":  13500 if m <= cur_m else 0}
+                for m in range(1, 13)]
+        mom, yoy, flags = run_all(_make_df(rows), "ratio")
+        html, _ = build_report(mom, yoy, flags, {"name": "COGS", "metric": "ratio"})
+        assert "still in progress" in html          # banner body text
+
+    def test_complete_month_has_no_banner(self):
+        # income only in a month that is not the current month → no MTD label
+        other = 12 if datetime.now().month != 12 else 11
+        df = _make_df([{"year": _CURRENT_YEAR, "month": other, "income": 45000, "value": 13500}])
+        mom, yoy, flags = run_all(df, "ratio")
+        html, _ = build_report(mom, yoy, flags, {"name": "COGS", "metric": "ratio"})
+        assert "still in progress" not in html
+
 
 # ---------------------------------------------------------------------------
 # build_vendor_report

@@ -43,6 +43,15 @@ class TestReportSanity:
         # no division-by-zero; income==0 just can't be ratio-checked
         assert report_sanity(_row(0, 0), 2026, 5, "ratio") == []
 
+    def test_partial_month_skips_ratio_band(self):
+        # an absurd ratio is legitimate month-to-date when partial=True
+        assert report_sanity(_row(50000, 200000), 2026, 5, "ratio", partial=True) == []
+
+    def test_partial_still_catches_non_finite(self):
+        # structural checks remain even for a partial month
+        reasons = report_sanity(_row(50000, float("inf")), 2026, 5, "ratio", partial=True)
+        assert any("non-finite" in r for r in reasons)
+
 
 # ---------------------------------------------------------------------------
 # reconcile_identities
