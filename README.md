@@ -102,7 +102,12 @@ Repository secrets required (**Settings → Secrets and variables → Actions**)
 `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_REDIRECT_URI`, `QBO_REALM_ID`,
 `QBO_ACCESS_TOKEN`, `QBO_REFRESH_TOKEN`, `QBO_TOKEN_EXPIRY`,
 `EMAIL_PROVIDER`, `EMAIL_FROM`, `EMAIL_TO`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
-`SMTP_PASSWORD`, `COGS_VARIANCE_THRESHOLD`, and **`GH_PAT`** (see below).
+`SMTP_PASSWORD`, `COGS_VARIANCE_THRESHOLD`, **`ALERT_EMAIL`**, and **`GH_PAT`** (see below).
+
+> **`EMAIL_TO` vs `ALERT_EMAIL`:** `EMAIL_TO` is the **business owner's** report address;
+> **`ALERT_EMAIL`** is **your** operator address for failure / hold / PAT-expiry alerts.
+> Alerts default to `ALERT_EMAIL`, fall back to `EMAIL_FROM` (the sending account), and are
+> **never** sent to `EMAIL_TO` — the owner must not receive technical alerts.
 
 Optional: `HEARTBEAT_URL` (dead-man's-switch ping target — see below),
 `RECON_TOLERANCE` (guardrail dollar tolerance, default `1.00`),
@@ -175,7 +180,7 @@ CI-only (it needs `GH_PAT`), so local runs never trigger it.
 
 ### Failure alerting
 
-Any failed run emails `EMAIL_TO`:
+Any failed run emails `ALERT_EMAIL` (the operator; falls back to `EMAIL_FROM`, never the owner):
 - **In-process** (`scheduler.py`): partial failures name the failed reports; fatal
   aborts include the traceback.
 - **Infra-level** (`monthly_report.yml`, `if: failure()`): catches failures the

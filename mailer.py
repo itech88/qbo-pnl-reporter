@@ -154,15 +154,19 @@ def send_report(
 
 def send_failure_alert(subject: str, body: str, email_to: str | None = None) -> bool:
     """
-    Send a short plain-text failure alert via SMTP. Best-effort: returns True on
+    Send a short plain-text operator alert via SMTP. Best-effort: returns True on
     success, False on any failure, and never raises — alerting must not crash the
     caller. No-op (returns False) if SMTP credentials are not configured.
+
+    Recipient precedence: explicit email_to → ALERT_EMAIL (the operator/developer)
+    → EMAIL_FROM (the sending account). EMAIL_TO is deliberately NOT used: it is the
+    business owner's report address, and operational alerts must never reach them.
     """
     required = ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM")
     if any(not os.getenv(k) for k in required):
         return False
 
-    recipient = email_to or os.getenv("EMAIL_TO") or os.environ["EMAIL_FROM"]
+    recipient = email_to or os.getenv("ALERT_EMAIL") or os.environ["EMAIL_FROM"]
     msg = MIMEText(body, "plain")
     msg["Subject"] = subject
     msg["From"]    = os.environ["EMAIL_FROM"]

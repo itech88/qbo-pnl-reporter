@@ -12,7 +12,8 @@ _SMTP_ENV = {
     "SMTP_USER":     "bot@example.com",
     "SMTP_PASSWORD": "pw",
     "EMAIL_FROM":    "bot@example.com",
-    "EMAIL_TO":      "owner@example.com",
+    "EMAIL_TO":      "owner@example.com",   # business owner — reports only
+    "ALERT_EMAIL":   "dev@example.com",     # operator — failure alerts
 }
 
 
@@ -35,7 +36,8 @@ class TestSendFailureAlert:
             # recipient + body propagated
             args = server.sendmail.call_args.args
             assert args[0] == "bot@example.com"
-            assert args[1] == ["owner@example.com"]
+            assert args[1] == ["dev@example.com"]      # ALERT_EMAIL (operator), NOT EMAIL_TO
+            assert args[1] != ["owner@example.com"]    # alerts must never reach the owner
             assert "details here" in args[2]
             assert "Build failed" in args[2]
 
@@ -52,6 +54,18 @@ class TestSendFailureAlert:
              patch("smtplib.SMTP", side_effect=OSError("connection refused")):
             # Best-effort: returns False, does not raise
             assert send_failure_alert("s", "b") is False
+
+    def test_falls_back_to_from_never_owner(self):
+        # ALERT_EMAIL unset → fall back to EMAIL_FROM (the bot), NOT EMAIL_TO (owner)
+        env = {**_SMTP_ENV, "ALERT_EMAIL": ""}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("smtplib.SMTP") as smtp_cls:
+            server = MagicMock()
+            smtp_cls.return_value.__enter__.return_value = server
+            send_failure_alert("s", "b")
+            recipient = server.sendmail.call_args.args[1]
+            assert recipient == ["bot@example.com"]      # EMAIL_FROM
+            assert recipient != ["owner@example.com"]    # never the owner
 
 
 class TestSendReport:
