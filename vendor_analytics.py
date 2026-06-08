@@ -31,12 +31,22 @@ def latest_period(df: pd.DataFrame) -> tuple[int, int] | None:
     return cur_year, int(year_df["month"].max())
 
 
-def current_month_breakdown(df: pd.DataFrame) -> dict:
+def current_month_breakdown(
+    df: pd.DataFrame,
+    period: tuple[int, int] | None = None,
+) -> dict:
     """
-    Vendor breakdown for the most recent month with data.
+    Vendor breakdown for a target month.
+
+    When `period` (year, month) is given, the breakdown is pinned to exactly that
+    month — even if it has no rows yet — so the report can show the in-progress
+    reporting month (with total $0 and an empty vendor list) rather than silently
+    falling back to an earlier month. When `period` is None it defaults to
+    latest_period(df), the most recent month that actually has COGS data.
     Returns {year, month, month_name, total, vendors: [{vendor, amount, share}]}.
     """
-    period = latest_period(df)
+    if period is None:
+        period = latest_period(df)
     if period is None:
         return {"year": None, "month": None, "month_name": "", "total": 0.0, "vendors": []}
 
@@ -100,12 +110,18 @@ def monthly_share_matrix(df: pd.DataFrame, top_n: int = 6) -> dict:
     return {"months": months, "vendors": vendors, "series": series}
 
 
-def vendor_yoy(df: pd.DataFrame) -> dict:
+def vendor_yoy(
+    df: pd.DataFrame,
+    period: tuple[int, int] | None = None,
+) -> dict:
     """
-    Same-month year-over-year spend per vendor for the most recent month.
+    Same-month year-over-year spend per vendor. `period` (year, month) selects the
+    target month so the comparison stays aligned with current_month_breakdown;
+    defaults to latest_period(df) when None.
     Returns {month_name, years: [ints], rows: [{vendor, by_year: {year: amount}}]}.
     """
-    period = latest_period(df)
+    if period is None:
+        period = latest_period(df)
     if period is None:
         return {"month_name": "", "years": [], "rows": []}
 

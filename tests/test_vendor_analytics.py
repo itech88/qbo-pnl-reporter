@@ -69,6 +69,23 @@ class TestCurrentMonthBreakdown:
         assert b["vendors"] == []
         assert b["total"] == 0.0
 
+    def test_pinned_period_with_data(self, sample):
+        # Pin to Jan rather than the latest month (Feb).
+        b = current_month_breakdown(sample, period=(2026, 1))
+        assert b["month"] == 1
+        assert b["month_name"] == "Jan"
+        assert b["total"] == 4000.0  # Alcon 2000 + ABB 1000 + B-Lite 1000
+
+    def test_pinned_period_with_no_rows_shows_that_month(self, sample):
+        # June (6) has no rows; pinning must still report June, empty, $0 — not
+        # fall back to Feb. This is the in-progress reporting-month case.
+        b = current_month_breakdown(sample, period=(2026, 6))
+        assert b["year"] == 2026
+        assert b["month"] == 6
+        assert b["month_name"] == "Jun"
+        assert b["total"] == 0.0
+        assert b["vendors"] == []
+
 
 # ---------------------------------------------------------------------------
 # monthly_share_matrix
@@ -126,3 +143,11 @@ class TestVendorYoy:
     def test_empty(self):
         y = vendor_yoy(_df([]))
         assert y["rows"] == []
+
+    def test_honors_pinned_period(self, sample):
+        # Pin to Jan rather than the latest month (Feb).
+        y = vendor_yoy(sample, period=(2026, 1))
+        assert y["month_name"] == "Jan"
+        alcon = next(r for r in y["rows"] if r["vendor"] == "Alcon")
+        assert alcon["by_year"][2026] == 2000.0
+        assert alcon["by_year"][2025] == 1800.0

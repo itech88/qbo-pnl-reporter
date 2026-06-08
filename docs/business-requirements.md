@@ -136,6 +136,19 @@ Scenario: Truly unidentifiable spend remains visible
   Given a COGS charge has neither a Payee nor a usable memo
   When the report is generated
   Then the spend is shown as "Unattributed" rather than dropped
+
+Scenario: The vendor breakdown tracks the same month as the metric reports
+  Given the metric reports are reporting the current month as partial (month-to-date)
+  When the COGS by Vendor report runs
+  Then it reports that same month, flagged partial
+  And it does not lag to the prior month just because vendor bills post late
+
+Scenario: The current month has no COGS posted yet
+  Given the reporting month is the current month and no COGS bill has posted
+  When the COGS by Vendor report runs
+  Then it shows that month with a "no COGS posted yet" note and a $0 total
+  # On the 1st the reporting month is the just-completed prior month, so this
+  # empty state only appears mid-month before the first vendor bill lands.
 ```
 
 ---
