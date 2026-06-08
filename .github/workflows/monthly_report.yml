@@ -1,4 +1,4 @@
-name: Monthly COGS Report
+name: Monthly P&L Reports
 
 on:
   schedule:

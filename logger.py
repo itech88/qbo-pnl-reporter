@@ -1,5 +1,5 @@
 """
-Shared logger for the QBO COGS reporter.
+Shared logger for the QBO P&L reporter.
 
 All modules import get_logger() and log against the "qbo" hierarchy.
 Output goes to both stdout and a rotating file at logs/qbo_cogs.log.

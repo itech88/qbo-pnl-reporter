@@ -26,7 +26,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 def _default_subject() -> str:
-    return f"COGS Report — {datetime.now().strftime('%B %Y')}"
+    return f"Monthly P&L Report — {datetime.now().strftime('%B %Y')}"
 
 
 def _build_mime(subject: str, html: str, chart_png: bytes, email_to: str) -> MIMEMultipart:

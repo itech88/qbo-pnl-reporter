@@ -122,4 +122,4 @@ class TestSendReport:
         with patch.dict("os.environ", self._env("smtp"), clear=False), \
              patch.dict("mailer._BACKENDS", {"smtp": backend}):
             send_report("<html>", b"PNG")   # no subject
-        assert backend.call_args.args[0].startswith("COGS Report")
+        assert backend.call_args.args[0].startswith("Monthly P&L Report")

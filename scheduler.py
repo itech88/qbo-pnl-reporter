@@ -263,7 +263,12 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                                       run_id, name, "; ".join(vreasons))
                             if not dry_run:
                                 continue
-                    html, chart_png = build_vendor_report(vdf, cfg)
+                    # Pin the vendor breakdown to the same reporting month the
+                    # metric reports use (income-based). `period` is None only on a
+                    # single-report run where no metric data was collected — fall
+                    # back to the current calendar month there.
+                    vendor_period = period if period else (today.year, today.month)
+                    html, chart_png = build_vendor_report(vdf, cfg, report_period=vendor_period)
                     log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
                     subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
                     _deliver(html, chart_png, subject, cfg, dry_run, run_id)

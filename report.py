@@ -312,18 +312,23 @@ def _vendor_chart(matrix: dict, report_name: str) -> bytes:
 def build_vendor_report(
     df,
     report_config: dict,
+    report_period: tuple[int, int] | None = None,
 ) -> tuple[str, bytes]:
     """
     Render the COGS-by-vendor report.
     `df` is the long DataFrame from vendor_fetcher (year, month, vendor, amount).
+    `report_period` (year, month), when given, pins the breakdown to the same
+    reporting month the metric reports use, so the vendor view tracks them instead
+    of lagging to the last month with posted detail. Defaults to the latest month
+    with data.
     """
     from vendor_analytics import (
         current_month_breakdown, monthly_share_matrix, vendor_yoy,
     )
 
-    breakdown = current_month_breakdown(df)
+    breakdown = current_month_breakdown(df, report_period)
     matrix    = monthly_share_matrix(df, top_n=6)
-    yoy       = vendor_yoy(df)
+    yoy       = vendor_yoy(df, report_period)
 
     now = datetime.now()
     partial = breakdown["year"] == now.year and breakdown["month"] == now.month
