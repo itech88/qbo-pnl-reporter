@@ -325,50 +325,79 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             failed_names.append("vendor detail fetch")
             log.error("[%s]   FAILED to fetch vendor detail:\n%s", run_id, traceback.format_exc())
 
-    # ── Step 4.5: Aging reports (A/R, A/P) — point-in-time, separate endpoints
-    # Each side's open-document detail must tie to QBO's own aging summary total
-    # before it sends. Reconciled summaries are captured for the Cash Outlook step;
-    # a side that fails reconciliation is held (if it was being sent) and excluded
-    # from the outlook.
+    # ── Step 4.5: Balance-sheet snapshot reports (A/R + A/P aging) ────────────
+    # The Balance Sheet is fetched once and used two ways: its own A/R / A/P lines
+    # are the authoritative anchor each aging summary must reconcile against, and its
+    # cash on hand feeds the Cash Outlook. Anchoring on the Balance Sheet (not only on
+    # detail-vs-summary) keeps the reconcile-before-send guarantee even when a detail
+    # endpoint is unavailable — e.g. Intuit's "wrong cluster" fault on AgedPayableDetail
+    # — in which case the report degrades to a summary-only view.
     aging_summaries: dict[str, dict] = {}   # side -> aging_summary (only when reconciled)
+    bs: dict = {}
     if send_aging or send_outlook:
         from aging_fetcher import fetch_aging_raw, build_aging_dataframe
         from aging_analytics import aging_summary
         from report import build_aging_report
-        from guardrails import reconcile_aging
+        from guardrails import reconcile_aging, reconcile_balance_sheet
+
+        try:
+            from cash_outlook import fetch_balance_sheet, extract_balance_sheet
+            bs = extract_balance_sheet(fetch_balance_sheet())
+            log.info("[%s] Balance Sheet — cash=%s A/R=%s A/P=%s",
+                     run_id, bs.get("cash"), bs.get("ar"), bs.get("ap"))
+        except Exception:
+            log.error("[%s] Balance Sheet fetch failed:\n%s", run_id, traceback.format_exc())
+            bs = {}
 
         send_by_side = {c["side"]: c for c in send_aging}
-        # Cash Outlook needs both sides even if only the outlook is being sent.
-        needed_sides = set(send_by_side)
+        needed_sides = set(send_by_side)        # Cash Outlook needs both sides
         if send_outlook:
             needed_sides |= {"receivable", "payable"}
 
         daily_income = _trailing_daily_income(collected)
         daily_cogs   = _trailing_daily_cogs(collected)
+        _bs_key      = {"receivable": "ar", "payable": "ap"}
+        _label       = {"receivable": "A/R", "payable": "A/P"}
 
         for side in sorted(needed_sides):
             cfg = send_by_side.get(side)
             nm  = cfg["name"] if cfg else f"{side} aging"
             try:
                 log.info("[%s] ── Aging (%s) ──", run_id, side)
-                raw      = fetch_aging_raw(side)
-                bdf, ddf = build_aging_dataframe(raw, cfg or {"name": nm, "side": side})
-                summ     = aging_summary(bdf)
-                detail_total = float(ddf["open_balance"].sum()) if not ddf.empty else 0.0
-                reasons  = reconcile_aging(summ["total"], detail_total, label=nm)
+                raw           = fetch_aging_raw(side)   # detail is best-effort inside
+                bdf, ddf      = build_aging_dataframe(raw, cfg or {"name": nm, "side": side})
+                summ          = aging_summary(bdf)
+                detail_avail  = raw.get("detail") is not None
+                bs_total      = bs.get(_bs_key[side])
+
+                reasons: list[str] = []
+                anchored = False
+                if bs_total is not None:
+                    reasons += reconcile_balance_sheet(bs_total, summ["total"], label=_label[side])
+                    anchored = True
+                if detail_avail:
+                    detail_total = float(ddf["open_balance"].sum()) if not ddf.empty else 0.0
+                    reasons += reconcile_aging(summ["total"], detail_total, label=nm)
+                    anchored = True
+                if not anchored:
+                    reasons.append("no reconciliation anchor — Balance Sheet line and detail "
+                                   "endpoint both unavailable")
+
                 if reasons:
                     log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, "; ".join(reasons))
                     if cfg:
                         held.setdefault(nm, []).extend(reasons)
                 else:
-                    aging_summaries[side] = summ   # tied → safe to feed the outlook
+                    aging_summaries[side] = summ   # reconciled → safe to feed the outlook
 
                 if cfg:
                     if nm in held and not dry_run:
                         continue   # withhold from owner; dry-run still writes a preview
                     trailing = daily_income if side == "receivable" else daily_cogs
-                    html, chart_png = build_aging_report(bdf, ddf, cfg, trailing_daily=trailing)
-                    log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
+                    html, chart_png = build_aging_report(
+                        bdf, ddf, cfg, trailing_daily=trailing, detail_available=detail_avail)
+                    log.info("[%s]   HTML=%d chars  chart=%d bytes%s", run_id, len(html),
+                             len(chart_png), "" if detail_avail else "  (summary-only)")
                     subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
                     _deliver(html, chart_png, subject, cfg, dry_run, run_id)
             except Exception:
@@ -384,26 +413,14 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                 reason = "upstream A/R or A/P aging did not reconcile (both required)"
                 held.setdefault(nm, []).append(reason)
                 log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, reason)
-                continue   # cannot build a trustworthy position without both tied summaries
+                continue   # cannot build a trustworthy position without both reconciled summaries
 
-            from cash_outlook import fetch_balance_sheet, extract_balance_sheet, build_outlook
+            from cash_outlook import build_outlook
             from report import build_cash_outlook
-            from guardrails import reconcile_balance_sheet
-
-            bs     = extract_balance_sheet(fetch_balance_sheet())
-            ar_sum = aging_summaries["receivable"]
-            ap_sum = aging_summaries["payable"]
-
-            # Cross-anchor: the Balance Sheet's own A/R and A/P must match the aging totals.
-            bs_reasons  = reconcile_balance_sheet(bs.get("ar"), ar_sum["total"], label="A/R")
-            bs_reasons += reconcile_balance_sheet(bs.get("ap"), ap_sum["total"], label="A/P")
-            if bs_reasons:
-                held.setdefault(nm, []).extend(bs_reasons)
-                log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, "; ".join(bs_reasons))
-                if not dry_run:
-                    continue
-
-            outlook = build_outlook(ar_sum, ap_sum, bs.get("cash"))
+            # A/R and A/P totals were already anchored to the Balance Sheet above; the
+            # outlook just composes them with the same cash-on-hand figure.
+            outlook = build_outlook(aging_summaries["receivable"],
+                                    aging_summaries["payable"], bs.get("cash"))
             html, chart_png = build_cash_outlook(outlook, oc)
             log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
             subject = oc["subject"].format(month=today.strftime("%B"), year=today.year)

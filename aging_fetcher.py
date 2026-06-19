@@ -222,8 +222,16 @@ def _parse_detail(
 # Raw fetch
 # ---------------------------------------------------------------------------
 
-def fetch_aging_raw(side: str, as_of: str | None = None) -> dict[str, dict]:
-    """Fetch the summary + detail aging reports for `side` as of today (or `as_of`)."""
+def fetch_aging_raw(side: str, as_of: str | None = None) -> dict:
+    """
+    Fetch the summary + detail aging reports for `side` as of today (or `as_of`).
+
+    The **summary is required** (it carries the authoritative bucketed total). The
+    **detail is best-effort**: some realms persistently return Intuit fault 130
+    ("Accessing Wrong Cluster") on a detail endpoint while the summary works fine.
+    Rather than fail the whole report, we return `detail: None` and let the caller
+    degrade to a summary-only view — still reconciled against the Balance Sheet.
+    """
     if side not in _ENDPOINTS:
         raise ValueError(f"Unknown aging side {side!r}; choose from {list(_ENDPOINTS)}")
     summary_report, detail_report = _ENDPOINTS[side]
@@ -233,10 +241,21 @@ def fetch_aging_raw(side: str, as_of: str | None = None) -> dict[str, dict]:
     log.info("API request — report=%s report_date=%s", summary_report, as_of)
     s = session.get(_report_url(summary_report), params={"report_date": as_of}, timeout=30)
     s.raise_for_status()
-    log.info("API request — report=%s report_date=%s", detail_report, as_of)
-    d = session.get(_report_url(detail_report), params={"report_date": as_of}, timeout=40)
-    d.raise_for_status()
-    return {"summary": s.json(), "detail": d.json()}
+
+    detail_json = None
+    try:
+        log.info("API request — report=%s report_date=%s", detail_report, as_of)
+        d = session.get(_report_url(detail_report), params={"report_date": as_of}, timeout=40)
+        d.raise_for_status()
+        detail_json = d.json()
+    except Exception as exc:  # noqa: BLE001 — detail is optional; degrade, don't fail
+        log.warning(
+            "Detail report %s unavailable (%s) — falling back to summary-only. The "
+            "summary is still reconciled against the Balance Sheet before sending.",
+            detail_report, exc,
+        )
+
+    return {"summary": s.json(), "detail": detail_json}
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +274,8 @@ def build_aging_dataframe(
     aliases = {k.lower(): v for k, v in (report_config.get("aliases") or {}).items()}
     as_of = as_of or datetime.now().date()
 
-    bucket_records, bucket_order = _parse_summary(raw.get("summary", {}), aliases)
-    detail_records = _parse_detail(raw.get("detail", {}), aliases, as_of)
+    bucket_records, bucket_order = _parse_summary(raw.get("summary") or {}, aliases)
+    detail_records = _parse_detail(raw.get("detail") or {}, aliases, as_of)
 
     bdf = pd.DataFrame(bucket_records, columns=["party", "bucket", "amount"])
     # Collapse any duplicate party rows (alias merges) into one per bucket.

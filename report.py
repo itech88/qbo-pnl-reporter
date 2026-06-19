@@ -553,11 +553,14 @@ def build_aging_report(
     detail_df,
     report_config: dict,
     trailing_daily: float | None = None,
+    detail_available: bool = True,
 ) -> tuple[str, bytes]:
     """
     Render an aging report (A/R or A/P). `summary_df`/`detail_df` come from
     aging_fetcher.build_aging_dataframe. `trailing_daily` (daily revenue for A/R,
     daily spend for A/P) drives DSO/DPO when available, else it shows '—'.
+    `detail_available=False` (the per-item detail endpoint failed) renders the
+    summary-only view with a note instead of the oldest-items worklist.
     Returns (html, chart_png).
     """
     from aging_analytics import (
@@ -619,6 +622,7 @@ def build_aging_report(
         "bucket_labels": breakdown["bucket_order"],
         "breakdown_rows": breakdown_rows,
         "oldest_rows":   oldest_rows,
+        "detail_available": detail_available,
     }
 
     template = _jinja_env().get_template("aging_report.html")

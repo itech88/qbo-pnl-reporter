@@ -265,6 +265,14 @@ def refresh_tokens() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _is_wrong_cluster(response) -> bool:
+    """True if a 401 is Intuit's fault code 130 "Accessing Wrong Cluster" (not auth)."""
+    if response.status_code != 401:
+        return False
+    body = response.text or ""
+    return "Accessing Wrong Cluster" in body or 'code="130"' in body
+
+
 class QBOSession(requests.Session):
     """A requests.Session that transparently refreshes tokens on 401 responses."""
 
@@ -279,7 +287,12 @@ class QBOSession(requests.Session):
         response = super().request(method, url, **kwargs)
         intuit_tid = response.headers.get("intuit_tid", "")
 
-        if response.status_code == 401:
+        # A 401 normally means the access token expired → refresh and retry once.
+        # But Intuit also returns 401 for fault code 130 "Accessing Wrong Cluster"
+        # (a routing error on certain report endpoints) — that is NOT an auth failure,
+        # so refreshing is useless and needlessly rotates the refresh token. Skip the
+        # refresh for wrong-cluster 401s and let the caller handle the failure.
+        if response.status_code == 401 and not _is_wrong_cluster(response):
             log.warning(
                 "%s %s → 401 Unauthorized (intuit_tid=%s) — refreshing token and retrying",
                 method, url, intuit_tid,

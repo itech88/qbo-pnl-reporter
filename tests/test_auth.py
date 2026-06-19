@@ -7,12 +7,44 @@ import pytest
 
 from auth import (
     _is_token_expired,
+    _is_wrong_cluster,
     _persist_to_github_secrets,
     _parse_pat_expiry,
     github_pat_expiry,
     refresh_tokens,
     QBOSession,
 )
+
+
+_WRONG_CLUSTER_BODY = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<IntuitResponse xmlns="http://schema.intuit.com/finance/v3">'
+    '<Fault type="AuthenticationFault"><Error code="130">'
+    '<Message>Accessing Wrong Cluster</Message>'
+    '<Detail>WrongClusterError: -11017-You have accessed the wrong server.</Detail>'
+    '</Error></Fault></IntuitResponse>'
+)
+
+
+class TestIsWrongCluster:
+    def _resp(self, status, text=""):
+        r = MagicMock()
+        r.status_code = status
+        r.text = text
+        return r
+
+    def test_detects_wrong_cluster_401(self):
+        assert _is_wrong_cluster(self._resp(401, _WRONG_CLUSTER_BODY)) is True
+
+    def test_detects_by_code_130(self):
+        assert _is_wrong_cluster(self._resp(401, '<Error code="130">x</Error>')) is True
+
+    def test_plain_401_is_not_wrong_cluster(self):
+        # a genuine auth failure must still trigger the refresh path
+        assert _is_wrong_cluster(self._resp(401, "token expired")) is False
+
+    def test_non_401_is_not_wrong_cluster(self):
+        assert _is_wrong_cluster(self._resp(200, _WRONG_CLUSTER_BODY)) is False
 
 
 class TestIsTokenExpired:

@@ -135,3 +135,11 @@ class TestBuildDataframe:
         assert "VSP Vision Plan" in set(bdf["party"])
         assert "VSP" not in set(bdf["party"])
         assert "VSP Vision Plan" in set(ddf["party"])
+
+    def test_summary_only_when_detail_unavailable(self, ar_summary):
+        # Detail endpoint failed (e.g. Intuit "wrong cluster") -> detail is None.
+        # Buckets still build from the summary; detail_df is empty (summary-only mode).
+        bdf, ddf = build_aging_dataframe(
+            {"summary": ar_summary, "detail": None}, {"name": "A/P Aging"}, as_of=AS_OF)
+        assert round(bdf["amount"].sum(), 2) == 3000.00
+        assert ddf.empty
