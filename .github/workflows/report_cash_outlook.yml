@@ -1,7 +1,7 @@
 name: Report — Cash Outlook
 
-# Cash Outlook composes the A/R and A/P aging summaries (both fetched + reconciled as
-# dependencies) with Balance-Sheet cash. A single-report run pulls everything it needs.
+# Cash Outlook composes the reconciled A/R aging summary with Balance-Sheet cash and
+# Total Current Liabilities. A single-report run pulls everything it needs.
 
 on:
   workflow_dispatch:

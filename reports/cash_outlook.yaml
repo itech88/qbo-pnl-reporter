@@ -2,9 +2,10 @@ name: "Cash Outlook"
 subject: "Cash Outlook — where your cash stands, {month} {year}"
 type: cash_outlook
 
-# Cash Outlook composes the A/R Aging and A/P Aging summaries (both must reconcile)
-# with cash on hand from the Balance Sheet. It is held if either aging report is held,
-# so it never shows a position built on numbers that didn't tie.
+# Cash Outlook composes the reconciled A/R Aging summary with cash on hand and Total
+# Current Liabilities from the Balance Sheet (net = cash + A/R − current liabilities).
+# It is held if A/R aging didn't reconcile or the Balance Sheet has no Total Current
+# Liabilities line, so it never shows a position built on numbers that didn't tie.
 
 trigger_days: [1, 16]
 email_to: mtbpalmdale@gmail.com

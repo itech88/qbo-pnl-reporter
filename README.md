@@ -26,13 +26,21 @@ Ten reports, all config-driven (`reports/*.yaml`):
 | Payroll Expense Home Office Reimbursement | line item | $ + % |
 | **COGS by Vendor** | vendor breakdown | $ share, dynamic vendors |
 | **A/R Aging** | aging snapshot | money owed *to you*, by payer + age bucket |
-| **A/P Aging** | aging snapshot | money *you owe*, by creditor + age bucket |
-| **Cash Outlook** | position snapshot | cash on hand + A/R − A/P = net position |
+| **A/P Aging** | aging snapshot | money *you owe*, by creditor + age bucket — *code retained; not deployed for this client (see note below)* |
+| **Cash Outlook** | position snapshot | cash on hand + A/R − current liabilities = net position |
 | **Monthly Business Dashboard** | scorecard (1st only) | traffic-light vs 3-yr avg |
 
-Schedule: the 8 metric reports + COGS by Vendor + the three balance-sheet reports
-(A/R Aging, A/P Aging, Cash Outlook) send on the **1st and 16th**; the scorecard sends
-on the **1st only**. Cron is `0 18 1,16 * *` (18:00 UTC = 10 AM PST / 11 AM PDT).
+Schedule: the 8 metric reports + COGS by Vendor + the deployed balance-sheet reports
+(A/R Aging, Cash Outlook) send on the **1st and 16th**; the scorecard sends on the
+**1st only**. Cron is `0 18 1,16 * *` (18:00 UTC = 10 AM PST / 11 AM PDT).
+
+> **A/P Aging not deployed for this client:** this practice pays vendors by credit card
+> and never enters bills, so the accrual Balance Sheet has no Accounts Payable line — its
+> real short-term debt sits in credit cards + loans under **Total Current Liabilities**.
+> So A/P Aging is dropped here and Cash Outlook bases "owed" on Total Current Liabilities
+> (`net = cash + A/R − current liabilities`). The A/P fetch/analytics/reconcile code is
+> retained client-agnostic for future clients who *do* enter bills (for whom current
+> liabilities naturally includes A/P); only this deployment's config drops it.
 
 > **Flow vs. snapshot:** the P&L reports answer *"am I profitable?"* over a month; the
 > aging + outlook reports answer *"where is my cash?"* as of today. Aging is a
@@ -72,7 +80,7 @@ plain-language explanation of how API tokens and authentication work here.
 | `fetcher.py` | `ProfitAndLoss` summary → DataFrame; section / line-item / sub-section extraction |
 | `vendor_fetcher.py` | `ProfitAndLossDetail` → per-vendor COGS; **memo fallback** for blank-payee charges |
 | `aging_fetcher.py` | `AgedReceivables`/`AgedPayables` (+ detail) → buckets per payer/creditor; party aliasing |
-| `cash_outlook.py` | `BalanceSheet` cash on hand + composes the A/R/A/P summaries into a position |
+| `cash_outlook.py` | `BalanceSheet` cash on hand + Total Current Liabilities; composes with the A/R summary into a position |
 | `analytics.py` | MoM, YoY, anomaly flagging, scorecard stats |
 | `vendor_analytics.py` | Vendor share breakdown, monthly matrix, vendor YoY |
 | `aging_analytics.py` | Aging totals, per-party bucket breakdown, oldest-items worklist, DSO/DPO |

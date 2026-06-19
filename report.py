@@ -634,14 +634,14 @@ def build_aging_report(
 # ---------------------------------------------------------------------------
 
 def _outlook_chart(outlook: dict) -> bytes:
-    """Simple position bars: cash on hand, + receivables, − payables, = net."""
+    """Simple position bars: cash on hand, + receivables, − current liabilities, = net."""
     cash = outlook["cash"] or 0.0
     net  = outlook["net_position"]
     if net is None:
-        net = cash + outlook["ar_total"] - outlook["ap_total"]
+        net = cash + outlook["ar_total"] - outlook["current_liabilities"]
 
-    labels = ["Cash on hand", "+ Receivables", "− Payables", "= Net position"]
-    values = [cash, outlook["ar_total"], -outlook["ap_total"], net]
+    labels = ["Cash on hand", "+ Receivables", "− Current liabilities", "= Net position"]
+    values = [cash, outlook["ar_total"], -outlook["current_liabilities"], net]
     colors = ["#2563eb", "#16a34a", "#dc2626", "#7c3aed"]
 
     fig, ax = plt.subplots(figsize=(9, 3.2), dpi=150)
@@ -681,9 +681,7 @@ def build_cash_outlook(outlook: dict, report_config: dict) -> tuple[str, bytes]:
         "ar_total":     _fmt_currency(outlook["ar_total"]),
         "ar_current":   _fmt_currency(outlook["ar_current"]),
         "ar_overdue":   _fmt_currency(outlook["ar_overdue"]),
-        "ap_total":     _fmt_currency(outlook["ap_total"]),
-        "ap_current":   _fmt_currency(outlook["ap_current"]),
-        "ap_overdue":   _fmt_currency(outlook["ap_overdue"]),
+        "current_liabilities": _fmt_currency(outlook["current_liabilities"]),
         "net_position": _fmt_currency(outlook["net_position"]) if outlook["net_position"] is not None else "—",
         "net_negative": outlook["net_position"] is not None and outlook["net_position"] < 0,
     }

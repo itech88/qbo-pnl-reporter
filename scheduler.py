@@ -350,9 +350,9 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             bs = {}
 
         send_by_side = {c["side"]: c for c in send_aging}
-        needed_sides = set(send_by_side)        # Cash Outlook needs both sides
+        needed_sides = set(send_by_side)        # Cash Outlook needs the A/R side
         if send_outlook:
-            needed_sides |= {"receivable", "payable"}
+            needed_sides |= {"receivable"}      # "owed" comes from BS current liabilities, not A/P
 
         daily_income = _trailing_daily_income(collected)
         daily_cogs   = _trailing_daily_cogs(collected)
@@ -404,23 +404,28 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                 failed_names.append(nm)
                 log.error("[%s]   FAILED aging '%s':\n%s", run_id, nm, traceback.format_exc())
 
-    # ── Step 4.6: Cash Outlook — composes the reconciled A/R + A/P + cash on hand
+    # ── Step 4.6: Cash Outlook — composes reconciled A/R + cash on hand + current liabilities
     for oc in send_outlook:
         nm = oc["name"]
         try:
             log.info("[%s] ── Cash Outlook: %s ──", run_id, nm)
-            if not ({"receivable", "payable"} <= aging_summaries.keys()):
-                reason = "upstream A/R or A/P aging did not reconcile (both required)"
+            if "receivable" not in aging_summaries:
+                reason = "upstream A/R aging did not reconcile"
                 held.setdefault(nm, []).append(reason)
                 log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, reason)
-                continue   # cannot build a trustworthy position without both reconciled summaries
+                continue   # cannot build a trustworthy position without a reconciled A/R summary
+            if bs.get("current_liabilities") is None:
+                reason = "Balance Sheet 'Total Current Liabilities' unavailable — no trustworthy 'owed' figure"
+                held.setdefault(nm, []).append(reason)
+                log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, reason)
+                continue   # "owed" must come from a real BS line, never a $0 default
 
             from cash_outlook import build_outlook
             from report import build_cash_outlook
-            # A/R and A/P totals were already anchored to the Balance Sheet above; the
-            # outlook just composes them with the same cash-on-hand figure.
+            # A/R was anchored to the Balance Sheet above; "owed" is the BS's own Total
+            # Current Liabilities line. The outlook composes them with cash on hand.
             outlook = build_outlook(aging_summaries["receivable"],
-                                    aging_summaries["payable"], bs.get("cash"))
+                                    bs.get("cash"), bs.get("current_liabilities"))
             html, chart_png = build_cash_outlook(outlook, oc)
             log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
             subject = oc["subject"].format(month=today.strftime("%B"), year=today.year)

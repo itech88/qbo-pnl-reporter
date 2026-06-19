@@ -45,11 +45,26 @@
         "Rows": {"Row": [
           {
             "type": "Section",
-            "Header": {"ColData": [{"value": "Accounts Payable"}]},
+            "Header": {"ColData": [{"value": "Current Liabilities"}]},
             "Rows": {"Row": [
-              {"type": "Data", "ColData": [{"value": "Accounts Payable (A/P)"}, {"value": "1800.00"}]}
+              {
+                "type": "Section",
+                "Header": {"ColData": [{"value": "Accounts Payable"}]},
+                "Rows": {"Row": [
+                  {"type": "Data", "ColData": [{"value": "Accounts Payable (A/P)"}, {"value": "1800.00"}]}
+                ]},
+                "Summary": {"ColData": [{"value": "Total Accounts Payable"}, {"value": "1800.00"}]}
+              },
+              {
+                "type": "Section",
+                "Header": {"ColData": [{"value": "Credit Cards"}]},
+                "Rows": {"Row": [
+                  {"type": "Data", "ColData": [{"value": "Visa"}, {"value": "700.00"}]}
+                ]},
+                "Summary": {"ColData": [{"value": "Total Credit Cards"}, {"value": "700.00"}]}
+              }
             ]},
-            "Summary": {"ColData": [{"value": "Total Accounts Payable"}, {"value": "1800.00"}]}
+            "Summary": {"ColData": [{"value": "Total Current Liabilities"}, {"value": "2500.00"}]}
           }
         ]}
       }
