@@ -43,11 +43,21 @@ def _bs_url() -> str:
 
 
 def fetch_balance_sheet(as_of: str | None = None) -> dict:
-    """Fetch the Balance Sheet as of today (or `as_of`)."""
+    """
+    Fetch the Balance Sheet as of today (or `as_of`).
+
+    Forces **Accrual** basis: A/R and A/P only exist on an accrual balance sheet (a
+    cash-basis one has no receivables/payables), and the aging reports we reconcile
+    against it are inherently accrual.
+    """
     as_of = as_of or datetime.now().strftime("%Y-%m-%d")
     session = get_session()
-    log.info("API request — report=BalanceSheet report_date=%s", as_of)
-    r = session.get(_bs_url(), params={"report_date": as_of}, timeout=30)
+    log.info("API request — report=BalanceSheet report_date=%s accounting=Accrual", as_of)
+    r = session.get(
+        _bs_url(),
+        params={"report_date": as_of, "accounting_method": "Accrual"},
+        timeout=30,
+    )
     r.raise_for_status()
     return r.json()
 
@@ -82,11 +92,17 @@ def extract_balance_sheet(bs_json: dict) -> dict:
                 return val
         return None
 
-    return {
+    result = {
         "cash": find("total bank accounts", "bank accounts"),
         "ar":   find("accounts receivable", "a/r"),
         "ap":   find("accounts payable", "a/p"),
     }
+    # If A/R or A/P can't be located, log the labels we did see so the needles can be
+    # tuned to this realm's chart of accounts (names only, not balances).
+    if result["ar"] is None or result["ap"] is None:
+        log.warning("Balance Sheet A/R/A/P not found (ar=%s ap=%s). Labels seen: %s",
+                    result["ar"], result["ap"], [lbl for lbl, _ in pairs])
+    return result
 
 
 def build_outlook(ar_summary: dict, ap_summary: dict, cash: float | None) -> dict:
