@@ -25,11 +25,19 @@ Ten reports, all config-driven (`reports/*.yaml`):
 | Home Office Supplies | line item | $ + % |
 | Payroll Expense Home Office Reimbursement | line item | $ + % |
 | **COGS by Vendor** | vendor breakdown | $ share, dynamic vendors |
+| **A/R Aging** | aging snapshot | money owed *to you*, by payer + age bucket |
+| **A/P Aging** | aging snapshot | money *you owe*, by creditor + age bucket |
+| **Cash Outlook** | position snapshot | cash on hand + A/R − A/P = net position |
 | **Monthly Business Dashboard** | scorecard (1st only) | traffic-light vs 3-yr avg |
 
-Schedule: the 8 metric reports + COGS by Vendor send on the **1st and 16th**; the
-scorecard sends on the **1st only**. Cron is `0 18 1,16 * *` (18:00 UTC = 10 AM
-PST / 11 AM PDT).
+Schedule: the 8 metric reports + COGS by Vendor + the three balance-sheet reports
+(A/R Aging, A/P Aging, Cash Outlook) send on the **1st and 16th**; the scorecard sends
+on the **1st only**. Cron is `0 18 1,16 * *` (18:00 UTC = 10 AM PST / 11 AM PDT).
+
+> **Flow vs. snapshot:** the P&L reports answer *"am I profitable?"* over a month; the
+> aging + outlook reports answer *"where is my cash?"* as of today. Aging is a
+> point-in-time snapshot (no MoM/YoY), reconciled against QBO's own aging totals and
+> the Balance Sheet before sending. See [docs/business-requirements.md](docs/business-requirements.md).
 
 ---
 
@@ -63,10 +71,13 @@ plain-language explanation of how API tokens and authentication work here.
 | `auth.py` | OAuth 2.0, token refresh on 401 / pre-expiry, `QBOSession`, **writeback of rotated tokens to GitHub Secrets** |
 | `fetcher.py` | `ProfitAndLoss` summary → DataFrame; section / line-item / sub-section extraction |
 | `vendor_fetcher.py` | `ProfitAndLossDetail` → per-vendor COGS; **memo fallback** for blank-payee charges |
+| `aging_fetcher.py` | `AgedReceivables`/`AgedPayables` (+ detail) → buckets per payer/creditor; party aliasing |
+| `cash_outlook.py` | `BalanceSheet` cash on hand + composes the A/R/A/P summaries into a position |
 | `analytics.py` | MoM, YoY, anomaly flagging, scorecard stats |
 | `vendor_analytics.py` | Vendor share breakdown, monthly matrix, vendor YoY |
+| `aging_analytics.py` | Aging totals, per-party bucket breakdown, oldest-items worklist, DSO/DPO |
 | `report.py` | Renders HTML + matplotlib charts (report, scorecard, vendor) |
-| `guardrails.py` | **Stateless pre-send reconciliation** — P&L cross-foot identities, vendor-vs-summary tie, per-report sanity bands |
+| `guardrails.py` | **Stateless pre-send reconciliation** — P&L cross-foot identities, vendor-vs-summary tie, aging detail-vs-summary + Balance-Sheet tie, per-report sanity bands |
 | `mailer.py` | SMTP / SendGrid / SES delivery (CID inline chart); `send_failure_alert` |
 | `scheduler.py` | Entry point: load configs, fetch once, **guardrail-check, hold bad reports**, run each, alert, heartbeat |
 | `logger.py` | Shared rotating logger |

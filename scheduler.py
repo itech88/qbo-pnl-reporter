@@ -97,6 +97,42 @@ def _reporting_period(collected: dict[str, tuple]) -> tuple[int, int] | None:
     return (current_year, latest) if latest is not None else None
 
 
+def _trailing_daily(series, months: int = 3) -> float | None:
+    """Average daily flow over the last `months` completed months with positive data.
+
+    Used for DSO/DPO: divide an A/R or A/P balance by a daily revenue/spend rate.
+    Returns None when there is no usable history, so the report shows '—' instead of
+    a divide-by-zero artifact.
+    """
+    positive = [v for v in series if v and v > 0]
+    if not positive:
+        return None
+    recent = positive[-months:]
+    return float(sum(recent)) / (len(recent) * 30.0)
+
+
+def _trailing_daily_income(collected: dict[str, tuple]) -> float | None:
+    """Daily revenue rate from any collected report's shared income column (for DSO)."""
+    current_year = datetime.now().year
+    for value in collected.values():
+        df = value[0]
+        cur = df[(df["year"] == current_year) & (df["income"] > 0)].sort_values("month")
+        if not cur.empty:
+            return _trailing_daily(cur["income"].tolist())
+    return None
+
+
+def _trailing_daily_cogs(collected: dict[str, tuple]) -> float | None:
+    """Daily spend rate from the COGS report's value column (for DPO). None if absent."""
+    current_year = datetime.now().year
+    cogs = collected.get("COGS")
+    if not cogs:
+        return None
+    df  = cogs[0]
+    cur = df[(df["year"] == current_year) & (df["value"] > 0)].sort_values("month")
+    return _trailing_daily(cur["value"].tolist()) if not cur.empty else None
+
+
 def _section_totals(collected: dict[str, tuple], year: int, month: int) -> dict[str, float]:
     """Section value (plus the shared income) for the reporting month, keyed by report name."""
     from guardrails import INCOME
@@ -123,27 +159,35 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
     log.info("━" * 60)
 
     all_configs    = load_report_configs()
-    data_cfgs_all  = [c for c in all_configs if c.get("type") not in ("scorecard", "vendor_breakdown")]
+    _NON_DATA      = ("scorecard", "vendor_breakdown", "aging", "cash_outlook")
+    data_cfgs_all  = [c for c in all_configs if c.get("type") not in _NON_DATA]
     scorecard_cfgs = [c for c in all_configs if c.get("type") == "scorecard"]
     vendor_cfgs    = [c for c in all_configs if c.get("type") == "vendor_breakdown"]
+    aging_cfgs     = [c for c in all_configs if c.get("type") == "aging"]
+    outlook_cfgs   = [c for c in all_configs if c.get("type") == "cash_outlook"]
 
     # ── Determine which configs to send ──────────────────────────────────────
     if report_filter:
         f = report_filter.lower()
-        send_data   = [c for c in data_cfgs_all  if c["name"].lower() == f]
-        send_score  = [c for c in scorecard_cfgs if c["name"].lower() == f]
-        send_vendor = [c for c in vendor_cfgs    if c["name"].lower() == f]
-        if not send_data and not send_score and not send_vendor:
+        send_data    = [c for c in data_cfgs_all  if c["name"].lower() == f]
+        send_score   = [c for c in scorecard_cfgs if c["name"].lower() == f]
+        send_vendor  = [c for c in vendor_cfgs    if c["name"].lower() == f]
+        send_aging   = [c for c in aging_cfgs     if c["name"].lower() == f]
+        send_outlook = [c for c in outlook_cfgs   if c["name"].lower() == f]
+        if not (send_data or send_score or send_vendor or send_aging or send_outlook):
             log.error("No config found matching --report %r", report_filter)
             sys.exit(1)
     elif force:
         send_data, send_score, send_vendor = data_cfgs_all, scorecard_cfgs, vendor_cfgs
+        send_aging, send_outlook = aging_cfgs, outlook_cfgs
     else:
         day = today.day
-        send_data   = [c for c in data_cfgs_all  if day in c.get("trigger_days", [1, 16])]
-        send_score  = [c for c in scorecard_cfgs if day in c.get("trigger_days", [1])]
-        send_vendor = [c for c in vendor_cfgs    if day in c.get("trigger_days", [1, 16])]
-        if not send_data and not send_score and not send_vendor:
+        send_data    = [c for c in data_cfgs_all  if day in c.get("trigger_days", [1, 16])]
+        send_score   = [c for c in scorecard_cfgs if day in c.get("trigger_days", [1])]
+        send_vendor  = [c for c in vendor_cfgs    if day in c.get("trigger_days", [1, 16])]
+        send_aging   = [c for c in aging_cfgs     if day in c.get("trigger_days", [1, 16])]
+        send_outlook = [c for c in outlook_cfgs   if day in c.get("trigger_days", [1, 16])]
+        if not (send_data or send_score or send_vendor or send_aging or send_outlook):
             log.info("Skipping — today is the %d%s, no configs trigger on this day.",
                      day, _ordinal(day))
             return
@@ -156,8 +200,9 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
     collect_cfgs = {c["name"]: c for c in data_cfgs_all
                     if c["name"] in {d["name"] for d in send_data} | scorecard_includes}
 
-    log.info("[%s] Sending: %d data report(s) + %d scorecard(s)",
-             run_id, len(send_data), len(send_score))
+    log.info("[%s] Sending: %d data + %d vendor + %d aging + %d outlook + %d scorecard",
+             run_id, len(send_data), len(send_vendor), len(send_aging),
+             len(send_outlook), len(send_score))
 
     # ── Step 1+2: Fetch P&L once and build analytics (skip if nothing needs it)
     from analytics import run_all, current_month_stats
@@ -280,6 +325,93 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             failed_names.append("vendor detail fetch")
             log.error("[%s]   FAILED to fetch vendor detail:\n%s", run_id, traceback.format_exc())
 
+    # ── Step 4.5: Aging reports (A/R, A/P) — point-in-time, separate endpoints
+    # Each side's open-document detail must tie to QBO's own aging summary total
+    # before it sends. Reconciled summaries are captured for the Cash Outlook step;
+    # a side that fails reconciliation is held (if it was being sent) and excluded
+    # from the outlook.
+    aging_summaries: dict[str, dict] = {}   # side -> aging_summary (only when reconciled)
+    if send_aging or send_outlook:
+        from aging_fetcher import fetch_aging_raw, build_aging_dataframe
+        from aging_analytics import aging_summary
+        from report import build_aging_report
+        from guardrails import reconcile_aging
+
+        send_by_side = {c["side"]: c for c in send_aging}
+        # Cash Outlook needs both sides even if only the outlook is being sent.
+        needed_sides = set(send_by_side)
+        if send_outlook:
+            needed_sides |= {"receivable", "payable"}
+
+        daily_income = _trailing_daily_income(collected)
+        daily_cogs   = _trailing_daily_cogs(collected)
+
+        for side in sorted(needed_sides):
+            cfg = send_by_side.get(side)
+            nm  = cfg["name"] if cfg else f"{side} aging"
+            try:
+                log.info("[%s] ── Aging (%s) ──", run_id, side)
+                raw      = fetch_aging_raw(side)
+                bdf, ddf = build_aging_dataframe(raw, cfg or {"name": nm, "side": side})
+                summ     = aging_summary(bdf)
+                detail_total = float(ddf["open_balance"].sum()) if not ddf.empty else 0.0
+                reasons  = reconcile_aging(summ["total"], detail_total, label=nm)
+                if reasons:
+                    log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, "; ".join(reasons))
+                    if cfg:
+                        held.setdefault(nm, []).extend(reasons)
+                else:
+                    aging_summaries[side] = summ   # tied → safe to feed the outlook
+
+                if cfg:
+                    if nm in held and not dry_run:
+                        continue   # withhold from owner; dry-run still writes a preview
+                    trailing = daily_income if side == "receivable" else daily_cogs
+                    html, chart_png = build_aging_report(bdf, ddf, cfg, trailing_daily=trailing)
+                    log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
+                    subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
+                    _deliver(html, chart_png, subject, cfg, dry_run, run_id)
+            except Exception:
+                failed_names.append(nm)
+                log.error("[%s]   FAILED aging '%s':\n%s", run_id, nm, traceback.format_exc())
+
+    # ── Step 4.6: Cash Outlook — composes the reconciled A/R + A/P + cash on hand
+    for oc in send_outlook:
+        nm = oc["name"]
+        try:
+            log.info("[%s] ── Cash Outlook: %s ──", run_id, nm)
+            if not ({"receivable", "payable"} <= aging_summaries.keys()):
+                reason = "upstream A/R or A/P aging did not reconcile (both required)"
+                held.setdefault(nm, []).append(reason)
+                log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, reason)
+                continue   # cannot build a trustworthy position without both tied summaries
+
+            from cash_outlook import fetch_balance_sheet, extract_balance_sheet, build_outlook
+            from report import build_cash_outlook
+            from guardrails import reconcile_balance_sheet
+
+            bs     = extract_balance_sheet(fetch_balance_sheet())
+            ar_sum = aging_summaries["receivable"]
+            ap_sum = aging_summaries["payable"]
+
+            # Cross-anchor: the Balance Sheet's own A/R and A/P must match the aging totals.
+            bs_reasons  = reconcile_balance_sheet(bs.get("ar"), ar_sum["total"], label="A/R")
+            bs_reasons += reconcile_balance_sheet(bs.get("ap"), ap_sum["total"], label="A/P")
+            if bs_reasons:
+                held.setdefault(nm, []).extend(bs_reasons)
+                log.error("[%s]   GUARDRAIL HOLD — %s: %s", run_id, nm, "; ".join(bs_reasons))
+                if not dry_run:
+                    continue
+
+            outlook = build_outlook(ar_sum, ap_sum, bs.get("cash"))
+            html, chart_png = build_cash_outlook(outlook, oc)
+            log.info("[%s]   HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
+            subject = oc["subject"].format(month=today.strftime("%B"), year=today.year)
+            _deliver(html, chart_png, subject, oc, dry_run, run_id)
+        except Exception:
+            failed_names.append(nm)
+            log.error("[%s]   FAILED cash outlook '%s':\n%s", run_id, nm, traceback.format_exc())
+
     # ── Step 5: Build and send scorecard(s) ──────────────────────────────────
     for sc_cfg in send_score:
         try:
@@ -320,7 +452,8 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
     elapsed = time.monotonic() - started_at
     failures = len(failed_names)
     held_names = sorted(held)
-    total_reports = len(send_data) + len(send_vendor) + len(send_score)
+    total_reports = (len(send_data) + len(send_vendor) + len(send_aging)
+                     + len(send_outlook) + len(send_score))
     log.info("━" * 60)
     log.info("EXECUTION COMPLETE — run_id=%s reports=%d held=%d failures=%d anomalies=%d "
              "duration=%.2fs email_sent=%s",

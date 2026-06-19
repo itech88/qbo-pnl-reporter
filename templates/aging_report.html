@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ report_name }} — {{ report_date }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:24px 16px;">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <div style="background:#1e40af;border-radius:8px 8px 0 0;padding:24px 32px;color:#ffffff;">
+    <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:1.2px;">Aging Report · {{ owed_label }}</div>
+    <div style="font-size:22px;font-weight:700;margin-top:4px;">{{ report_name }}</div>
+    <div style="font-size:13px;margin-top:10px;opacity:0.8;">As of {{ report_date }}</div>
+
+    <table style="width:100%;margin-top:20px;border-collapse:collapse;">
+      <tr>
+        <td style="width:34%;padding:0 8px 0 0;vertical-align:top;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Total outstanding</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ total }}</div>
+        </td>
+        <td style="width:33%;padding:0 8px;vertical-align:top;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Overdue ({{ overdue_pct }})</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;color:#fecaca;">{{ overdue }}</div>
+        </td>
+        <td style="width:33%;padding:0 0 0 8px;vertical-align:top;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">{{ flow_label }}</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ dxo }}</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- ── Body ────────────────────────────────────────────────────────────── -->
+  <div style="background:#ffffff;padding:28px 32px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+
+    <!-- Snapshot note -->
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 18px;margin-bottom:24px;">
+      <div style="font-size:12px;color:#1e3a8a;line-height:1.5;">
+        Point-in-time snapshot as of {{ report_date }}. {{ flow_label }} = {{ flow_name }}.
+        Anything beyond <b>Current</b> is past due; the oldest items are most at risk.
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <img src="cid:monthly_chart"
+         alt="{{ report_name }} by age"
+         width="576"
+         style="width:100%;max-width:576px;border-radius:6px;display:block;margin-bottom:28px;">
+
+    <!-- ── Per-party aging table ───────────────────────────────────────── -->
+    <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:10px;">
+      Outstanding by {{ party_label }}
+    </div>
+    {% if breakdown_rows %}
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:32px;">
+      <thead>
+        <tr style="background:#f1f5f9;">
+          <th style="text-align:left;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ party_label }}</th>
+          {% for b in bucket_labels %}
+          <th style="text-align:right;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ b }}</th>
+          {% endfor %}
+          <th style="text-align:right;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in breakdown_rows %}
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 8px;color:#1e293b;">{{ row.party }}</td>
+          {% for cell in row.cells %}
+          <td style="text-align:right;padding:9px 8px;color:{% if cell.overdue %}#b91c1c{% else %}#475569{% endif %};{% if cell.overdue %}font-weight:600;{% endif %}">{{ cell.amount }}</td>
+          {% endfor %}
+          <td style="text-align:right;padding:9px 8px;color:#1e293b;font-weight:700;">{{ row.total }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="font-size:13px;color:#64748b;padding:8px 0 28px;">{{ empty_label }}</div>
+    {% endif %}
+
+    <!-- ── Oldest open items (worklist) ────────────────────────────────── -->
+    {% if oldest_rows %}
+    <div style="font-size:14px;font-weight:700;color:#1e293b;margin-bottom:10px;">
+      Oldest open items — work these first
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead>
+        <tr style="background:#f1f5f9;">
+          <th style="text-align:left;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">{{ party_label }}</th>
+          <th style="text-align:left;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Doc #</th>
+          <th style="text-align:left;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Due</th>
+          <th style="text-align:right;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Days</th>
+          <th style="text-align:right;padding:9px 8px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Open balance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in oldest_rows %}
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 8px;color:#1e293b;">{{ row.party }}</td>
+          <td style="padding:9px 8px;color:#64748b;">{{ row.doc_num }}</td>
+          <td style="padding:9px 8px;color:#64748b;">{{ row.due_date }}</td>
+          <td style="text-align:right;padding:9px 8px;color:{% if row.is_overdue %}#b91c1c{% else %}#64748b{% endif %};font-weight:{% if row.is_overdue %}700{% else %}400{% endif %};">
+            {% if row.days_overdue is not none %}{{ row.days_overdue }}{% else %}—{% endif %}
+          </td>
+          <td style="text-align:right;padding:9px 8px;color:#1e293b;font-weight:600;">{{ row.open_balance }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
+              padding:14px 32px;text-align:center;">
+    <div style="font-size:11px;color:#94a3b8;">
+      Reconciled to QuickBooks' own aging total before sending &nbsp;·&nbsp; {{ report_date }}
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

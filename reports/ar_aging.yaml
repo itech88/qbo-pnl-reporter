@@ -1,0 +1,18 @@
+name: "A/R Aging"
+subject: "A/R Aging — money owed to you, {month} {year}"
+type: aging
+side: receivable
+
+# Number of oldest open items to list as the chase-this-week worklist.
+top_items: 10
+
+# Canonical payer names: maps a raw QBO customer/payer name (lowercased) to a clean
+# display name so spellings merge into one row. Seeded empty — run a dry run first to
+# see the real payer names this practice uses, then add them here (same workflow as
+# the COGS-by-Vendor alias map). Example:
+#   "vsp":                "VSP"
+#   "eyemed vision care": "EyeMed"
+aliases: {}
+
+trigger_days: [1, 16]
+email_to: mtbpalmdale@gmail.com

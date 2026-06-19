@@ -1,0 +1,58 @@
+{
+  "Header": {"ReportName": "BalanceSheet", "ReportBasis": "Accrual"},
+  "Columns": {
+    "Column": [
+      {"ColTitle": "",      "ColType": "Account"},
+      {"ColTitle": "Total", "ColType": "Money"}
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "type": "Section",
+        "Header": {"ColData": [{"value": "ASSETS"}]},
+        "Rows": {"Row": [
+          {
+            "type": "Section",
+            "Header": {"ColData": [{"value": "Current Assets"}]},
+            "Rows": {"Row": [
+              {
+                "type": "Section",
+                "Header": {"ColData": [{"value": "Bank Accounts"}]},
+                "Rows": {"Row": [
+                  {"type": "Data", "ColData": [{"value": "Checking"}, {"value": "20000.00"}]},
+                  {"type": "Data", "ColData": [{"value": "Savings"},  {"value": "5000.00"}]}
+                ]},
+                "Summary": {"ColData": [{"value": "Total Bank Accounts"}, {"value": "25000.00"}]}
+              },
+              {
+                "type": "Section",
+                "Header": {"ColData": [{"value": "Accounts Receivable"}]},
+                "Rows": {"Row": [
+                  {"type": "Data", "ColData": [{"value": "Accounts Receivable (A/R)"}, {"value": "3000.00"}]}
+                ]},
+                "Summary": {"ColData": [{"value": "Total Accounts Receivable"}, {"value": "3000.00"}]}
+              }
+            ]},
+            "Summary": {"ColData": [{"value": "Total Current Assets"}, {"value": "28000.00"}]}
+          }
+        ]},
+        "Summary": {"ColData": [{"value": "Total ASSETS"}, {"value": "28000.00"}]}
+      },
+      {
+        "type": "Section",
+        "Header": {"ColData": [{"value": "LIABILITIES AND EQUITY"}]},
+        "Rows": {"Row": [
+          {
+            "type": "Section",
+            "Header": {"ColData": [{"value": "Accounts Payable"}]},
+            "Rows": {"Row": [
+              {"type": "Data", "ColData": [{"value": "Accounts Payable (A/P)"}, {"value": "1800.00"}]}
+            ]},
+            "Summary": {"ColData": [{"value": "Total Accounts Payable"}, {"value": "1800.00"}]}
+          }
+        ]}
+      }
+    ]
+  }
+}

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ report_name }} — {{ report_date }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;padding:24px 16px;">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <div style="background:#1e40af;border-radius:8px 8px 0 0;padding:24px 32px;color:#ffffff;">
+    <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:1.2px;">Cash Position</div>
+    <div style="font-size:22px;font-weight:700;margin-top:4px;">{{ report_name }}</div>
+    <div style="font-size:13px;margin-top:10px;opacity:0.8;">As of {{ report_date }}</div>
+
+    <table style="width:100%;margin-top:20px;border-collapse:collapse;">
+      <tr>
+        <td style="width:50%;padding:0 8px 0 0;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Cash on hand</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;">{{ cash }}</div>
+        </td>
+        <td style="width:50%;padding:0 0 0 8px;">
+          <div style="font-size:11px;opacity:0.65;text-transform:uppercase;letter-spacing:0.8px;">Net position</div>
+          <div style="font-size:20px;font-weight:700;margin-top:2px;color:{% if net_negative %}#fecaca{% else %}#bbf7d0{% endif %};">{{ net_position }}</div>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- ── Body ────────────────────────────────────────────────────────────── -->
+  <div style="background:#ffffff;padding:28px 32px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+
+    <!-- Snapshot note -->
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 18px;margin-bottom:24px;">
+      <div style="font-size:12px;color:#1e3a8a;line-height:1.5;">
+        A position snapshot, not a forecast: <b>Net position = Cash + Receivables − Payables</b>.
+        It shows where you stand if everything owed to you comes in and everything you owe goes out.
+      </div>
+    </div>
+
+    <!-- Chart -->
+    <img src="cid:monthly_chart"
+         alt="Cash position"
+         width="576"
+         style="width:100%;max-width:576px;border-radius:6px;display:block;margin-bottom:28px;">
+
+    <!-- ── Position table ──────────────────────────────────────────────── -->
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="background:#f1f5f9;">
+          <th style="text-align:left;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Component</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Current</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Overdue</th>
+          <th style="text-align:right;padding:9px 10px;color:#475569;font-weight:600;border-bottom:2px solid #e2e8f0;">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 10px;color:#1e293b;">Cash on hand</td>
+          <td style="text-align:right;padding:9px 10px;color:#94a3b8;">—</td>
+          <td style="text-align:right;padding:9px 10px;color:#94a3b8;">—</td>
+          <td style="text-align:right;padding:9px 10px;color:#1e293b;font-weight:700;">{{ cash }}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 10px;color:#1e293b;">+ Receivables (owed to you)</td>
+          <td style="text-align:right;padding:9px 10px;color:#475569;">{{ ar_current }}</td>
+          <td style="text-align:right;padding:9px 10px;color:#b91c1c;font-weight:600;">{{ ar_overdue }}</td>
+          <td style="text-align:right;padding:9px 10px;color:#16a34a;font-weight:700;">{{ ar_total }}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #f1f5f9;">
+          <td style="padding:9px 10px;color:#1e293b;">− Payables (you owe)</td>
+          <td style="text-align:right;padding:9px 10px;color:#475569;">{{ ap_current }}</td>
+          <td style="text-align:right;padding:9px 10px;color:#b91c1c;font-weight:600;">{{ ap_overdue }}</td>
+          <td style="text-align:right;padding:9px 10px;color:#dc2626;font-weight:700;">{{ ap_total }}</td>
+        </tr>
+        <tr style="border-top:2px solid #e2e8f0;">
+          <td style="padding:11px 10px;color:#1e293b;font-weight:700;">= Net position</td>
+          <td style="text-align:right;padding:11px 10px;color:#94a3b8;">—</td>
+          <td style="text-align:right;padding:11px 10px;color:#94a3b8;">—</td>
+          <td style="text-align:right;padding:11px 10px;font-weight:700;color:{% if net_negative %}#dc2626{% else %}#16a34a{% endif %};">{{ net_position }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <div style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;
+              padding:14px 32px;text-align:center;">
+    <div style="font-size:11px;color:#94a3b8;">
+      Composed from reconciled A/R, A/P, and Balance-Sheet cash &nbsp;·&nbsp; {{ report_date }}
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
