@@ -164,3 +164,60 @@ def reconcile_vendor(
             f"{cogs_summary:,.2f} (off by {diff:+,.2f})"
         ]
     return []
+
+
+# ---------------------------------------------------------------------------
+# Aging reconciliation (A/R and A/P)
+# ---------------------------------------------------------------------------
+
+def reconcile_aging(
+    summary_total: float | None,
+    detail_total: float | None,
+    label: str = "aging",
+) -> list[str]:
+    """
+    Tie the open-document detail to the aging summary grand total (same snapshot).
+
+    QBO's AgedReceivables/AgedPayables summary buckets and the matching detail report
+    are two endpoints over the same data; if Σ(open balances) ≠ the bucketed total,
+    something was mis-parsed or mid-sync, so the report is held rather than sent.
+    Tolerance is the larger of the absolute dollar tolerance or 1% of the total.
+    Returns failure reasons (empty = tied, or not enough data to check).
+    """
+    if summary_total is None or detail_total is None:
+        return []
+
+    tol = max(tolerance(), abs(summary_total) * 0.01)
+    diff = detail_total - summary_total
+    if abs(diff) > tol:
+        return [
+            f"{label} detail total {detail_total:,.2f} ≠ aging summary "
+            f"{summary_total:,.2f} (off by {diff:+,.2f})"
+        ]
+    return []
+
+
+def reconcile_balance_sheet(
+    bs_total: float | None,
+    aging_total: float | None,
+    label: str = "A/R",
+) -> list[str]:
+    """
+    Cross-anchor the aging total against the Balance Sheet's own A/R or A/P line.
+
+    A third independent witness (the Balance Sheet) to the same figure: if it
+    disagrees with the aging grand total beyond tolerance, the snapshot is internally
+    inconsistent and the dependent report should be held. Skipped when either input
+    is missing (e.g. the Balance Sheet line could not be located).
+    """
+    if bs_total is None or aging_total is None:
+        return []
+
+    tol = max(tolerance(), abs(bs_total) * 0.01)
+    diff = aging_total - bs_total
+    if abs(diff) > tol:
+        return [
+            f"{label} aging total {aging_total:,.2f} ≠ Balance Sheet {label} "
+            f"{bs_total:,.2f} (off by {diff:+,.2f})"
+        ]
+    return []

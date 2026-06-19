@@ -9,7 +9,6 @@ logs/
 preview_*.html
 raw_pl.json
 dump_pl.py
-data/*.db
 
 # Python
 __pycache__/

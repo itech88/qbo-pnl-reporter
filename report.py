@@ -482,6 +482,215 @@ def build_scorecard(
 
 
 # ---------------------------------------------------------------------------
+# Aging report (A/R and A/P) — point-in-time snapshot, no MoM/YoY
+# ---------------------------------------------------------------------------
+
+# Overdue buckets shade from amber to deep red as they age; 'Current' is green.
+_CURRENT_COLOR       = "#16a34a"
+_AGING_BUCKET_COLORS = ["#ca8a04", "#f97316", "#dc2626", "#991b1b", "#7f1d1d"]
+
+_SIDE_META = {
+    "receivable": {
+        "party_label": "Payer", "flow_label": "DSO",
+        "flow_name": "Days Sales Outstanding", "owed": "owed to you",
+        "empty": "No open receivables — nothing outstanding.",
+    },
+    "payable": {
+        "party_label": "Vendor", "flow_label": "DPO",
+        "flow_name": "Days Payable Outstanding", "owed": "owed by you",
+        "empty": "No open payables — nothing outstanding.",
+    },
+}
+
+
+def _is_current_bucket(label: str) -> bool:
+    return label.strip().lower() == "current"
+
+
+def _aging_chart(breakdown: dict, report_name: str) -> bytes:
+    """Horizontal stacked bars — outstanding balance per party, segmented by age bucket."""
+    rows         = breakdown["rows"]
+    bucket_order = breakdown["bucket_order"]
+    parties      = [r["party"] for r in rows]
+
+    fig, ax = plt.subplots(figsize=(9, max(3, len(parties) * 0.5)), dpi=150)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#f8f9fa")
+
+    y_pos = list(range(len(parties)))
+    lefts = [0.0] * len(parties)
+    overdue_i = 0
+    for b in bucket_order:
+        vals  = [r["buckets"].get(b, 0.0) for r in rows]
+        color = _CURRENT_COLOR if _is_current_bucket(b) else \
+            _AGING_BUCKET_COLORS[overdue_i % len(_AGING_BUCKET_COLORS)]
+        if not _is_current_bucket(b):
+            overdue_i += 1
+        ax.barh(y_pos, vals, left=lefts, label=b, color=color, height=0.6, zorder=3)
+        lefts = [l + v for l, v in zip(lefts, vals)]
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(parties, fontsize=8)
+    ax.invert_yaxis()
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax.tick_params(axis="x", labelsize=8)
+    ax.set_xlabel("Outstanding Balance", fontsize=9)
+    ax.set_title(f"{report_name} by Age", fontsize=11, fontweight="bold", pad=12)
+    ax.legend(fontsize=7.5, framealpha=0.85, ncol=min(len(bucket_order), 5), loc="lower right")
+    ax.grid(axis="x", linestyle="--", alpha=0.5, zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_aging_report(
+    summary_df,
+    detail_df,
+    report_config: dict,
+    trailing_daily: float | None = None,
+    detail_available: bool = True,
+) -> tuple[str, bytes]:
+    """
+    Render an aging report (A/R or A/P). `summary_df`/`detail_df` come from
+    aging_fetcher.build_aging_dataframe. `trailing_daily` (daily revenue for A/R,
+    daily spend for A/P) drives DSO/DPO when available, else it shows '—'.
+    `detail_available=False` (the per-item detail endpoint failed) renders the
+    summary-only view with a note instead of the oldest-items worklist.
+    Returns (html, chart_png).
+    """
+    from aging_analytics import (
+        aging_summary, party_breakdown, oldest_items, days_outstanding,
+    )
+
+    side = report_config.get("side", "receivable")
+    meta = _SIDE_META.get(side, _SIDE_META["receivable"])
+
+    summary   = aging_summary(summary_df)
+    breakdown = party_breakdown(summary_df, top_n=8)
+    items     = oldest_items(detail_df, report_config.get("top_items", 10))
+    dxo       = days_outstanding(summary["total"], trailing_daily)
+
+    chart_png = _aging_chart(breakdown, report_config["name"])
+
+    breakdown_rows = []
+    for r in breakdown["rows"]:
+        cells = []
+        for b in breakdown["bucket_order"]:
+            amt = r["buckets"].get(b, 0.0)
+            cells.append({
+                "amount":  _fmt_currency(amt) if amt else "—",
+                "overdue": (not _is_current_bucket(b)) and amt > 0,
+            })
+        breakdown_rows.append({
+            "party": r["party"],
+            "cells": cells,
+            "total": _fmt_currency(r["total"]),
+            "share": f"{r['share'] * 100:.1f}%",
+            "bar_w": round(r["share"] * 100, 1),
+        })
+
+    oldest_rows = [
+        {
+            "party":        it["party"],
+            "doc_num":      it["doc_num"],
+            "due_date":     it["due_date"],
+            "open_balance": _fmt_currency(it["open_balance"]),
+            "days_overdue": it["days_overdue"],
+            "is_overdue":   it["days_overdue"] is not None and it["days_overdue"] > 0,
+        }
+        for it in items
+    ]
+
+    context = {
+        "report_name":   report_config["name"],
+        "report_date":   datetime.now().strftime("%B %d, %Y"),
+        "party_label":   meta["party_label"],
+        "owed_label":    meta["owed"],
+        "flow_label":    meta["flow_label"],
+        "flow_name":     meta["flow_name"],
+        "empty_label":   meta["empty"],
+        "total":         _fmt_currency(summary["total"]),
+        "overdue":       _fmt_currency(summary["overdue"]),
+        "current":       _fmt_currency(summary["current"]),
+        "overdue_pct":   f"{summary['overdue_pct'] * 100:.0f}%",
+        "dxo":           f"{dxo:.0f} days" if dxo is not None else "—",
+        "bucket_labels": breakdown["bucket_order"],
+        "breakdown_rows": breakdown_rows,
+        "oldest_rows":   oldest_rows,
+        "detail_available": detail_available,
+    }
+
+    template = _jinja_env().get_template("aging_report.html")
+    return template.render(**context), chart_png
+
+
+# ---------------------------------------------------------------------------
+# Cash Outlook — position snapshot composed from A/R, A/P, and cash on hand
+# ---------------------------------------------------------------------------
+
+def _outlook_chart(outlook: dict) -> bytes:
+    """Simple position bars: cash on hand, + receivables, − current liabilities, = net."""
+    cash = outlook["cash"] or 0.0
+    net  = outlook["net_position"]
+    if net is None:
+        net = cash + outlook["ar_total"] - outlook["current_liabilities"]
+
+    labels = ["Cash on hand", "+ Receivables", "− Current liabilities", "= Net position"]
+    values = [cash, outlook["ar_total"], -outlook["current_liabilities"], net]
+    colors = ["#2563eb", "#16a34a", "#dc2626", "#7c3aed"]
+
+    fig, ax = plt.subplots(figsize=(9, 3.2), dpi=150)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#f8f9fa")
+
+    y_pos = list(range(len(labels)))
+    ax.barh(y_pos, values, color=colors, alpha=0.88, height=0.6, zorder=3)
+    ax.axvline(0, color="#475569", linewidth=1.0)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.invert_yaxis()
+    ax.xaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"${x:,.0f}" if x >= 0 else f"-${abs(x):,.0f}")
+    )
+    ax.tick_params(axis="x", labelsize=8)
+    ax.set_title("Cash Position", fontsize=11, fontweight="bold", pad=12)
+    ax.grid(axis="x", linestyle="--", alpha=0.5, zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+def build_cash_outlook(outlook: dict, report_config: dict) -> tuple[str, bytes]:
+    """Render the Cash Outlook position snapshot. `outlook` from cash_outlook.build_outlook."""
+    chart_png = _outlook_chart(outlook)
+
+    context = {
+        "report_name":  report_config["name"],
+        "report_date":  datetime.now().strftime("%B %d, %Y"),
+        "cash":         _fmt_currency(outlook["cash"]) if outlook["cash"] is not None else "—",
+        "ar_total":     _fmt_currency(outlook["ar_total"]),
+        "ar_current":   _fmt_currency(outlook["ar_current"]),
+        "ar_overdue":   _fmt_currency(outlook["ar_overdue"]),
+        "current_liabilities": _fmt_currency(outlook["current_liabilities"]),
+        "net_position": _fmt_currency(outlook["net_position"]) if outlook["net_position"] is not None else "—",
+        "net_negative": outlook["net_position"] is not None and outlook["net_position"] < 0,
+    }
+
+    template = _jinja_env().get_template("cash_outlook.html")
+    return template.render(**context), chart_png
+
+
+# ---------------------------------------------------------------------------
 # CLI — writes preview_report.html for browser inspection
 # ---------------------------------------------------------------------------
 

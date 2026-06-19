@@ -1,0 +1,34 @@
+{
+  "Header": {"ReportName": "AgedReceivables", "ReportBasis": "Accrual"},
+  "Columns": {
+    "Column": [
+      {"ColTitle": "",            "ColType": "Customer"},
+      {"ColTitle": "Current",     "ColType": "Money"},
+      {"ColTitle": "1 - 30",      "ColType": "Money"},
+      {"ColTitle": "31 - 60",     "ColType": "Money"},
+      {"ColTitle": "61 - 90",     "ColType": "Money"},
+      {"ColTitle": "91 and over", "ColType": "Money"},
+      {"ColTitle": "Total",       "ColType": "Money"}
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {"type": "Data", "ColData": [
+        {"value": "VSP"}, {"value": "1000.00"}, {"value": "500.00"},
+        {"value": "0.00"}, {"value": "0.00"}, {"value": "0.00"}, {"value": "1500.00"}
+      ]},
+      {"type": "Data", "ColData": [
+        {"value": "EyeMed"}, {"value": "200.00"}, {"value": "0.00"},
+        {"value": "300.00"}, {"value": "0.00"}, {"value": "800.00"}, {"value": "1300.00"}
+      ]},
+      {"type": "Data", "ColData": [
+        {"value": "Patient Balances"}, {"value": "100.00"}, {"value": "0.00"},
+        {"value": "0.00"}, {"value": "0.00"}, {"value": "100.00"}, {"value": "200.00"}
+      ]},
+      {"type": "Section", "Summary": {"ColData": [
+        {"value": "TOTAL"}, {"value": "1300.00"}, {"value": "500.00"},
+        {"value": "300.00"}, {"value": "0.00"}, {"value": "900.00"}, {"value": "3000.00"}
+      ]}}
+    ]
+  }
+}

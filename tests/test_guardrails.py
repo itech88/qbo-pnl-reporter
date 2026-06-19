@@ -7,6 +7,8 @@ from guardrails import (
     report_sanity,
     reconcile_identities,
     reconcile_vendor,
+    reconcile_aging,
+    reconcile_balance_sheet,
     INCOME, COGS, GROSS_PROFIT, NOI, OPEX,
 )
 
@@ -113,3 +115,42 @@ class TestReconcileVendor:
     def test_missing_inputs_skip(self):
         assert reconcile_vendor(None, 15000.0) == []
         assert reconcile_vendor(15000.0, None) == []
+
+
+# ---------------------------------------------------------------------------
+# reconcile_aging
+# ---------------------------------------------------------------------------
+
+class TestReconcileAging:
+    def test_ties_out(self):
+        assert reconcile_aging(3000.0, 3000.0, label="A/R Aging") == []
+
+    def test_mismatch_flagged(self):
+        reasons = reconcile_aging(3000.0, 2500.0, label="A/R Aging")
+        assert reasons and "off by" in reasons[0]
+        assert "A/R Aging" in reasons[0]
+
+    def test_one_percent_tolerance(self):
+        # $20 gap on $3000 is within the 1% tolerance
+        assert reconcile_aging(3000.0, 3020.0) == []
+
+    def test_missing_inputs_skip(self):
+        assert reconcile_aging(None, 3000.0) == []
+        assert reconcile_aging(3000.0, None) == []
+
+
+# ---------------------------------------------------------------------------
+# reconcile_balance_sheet
+# ---------------------------------------------------------------------------
+
+class TestReconcileBalanceSheet:
+    def test_ties_out(self):
+        assert reconcile_balance_sheet(3000.0, 3000.0, label="A/R") == []
+
+    def test_mismatch_flagged(self):
+        reasons = reconcile_balance_sheet(3000.0, 1800.0, label="A/R")
+        assert reasons and "Balance Sheet A/R" in reasons[0]
+
+    def test_missing_inputs_skip(self):
+        assert reconcile_balance_sheet(None, 3000.0) == []
+        assert reconcile_balance_sheet(3000.0, None) == []
