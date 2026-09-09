@@ -5,6 +5,7 @@ Flow:
   1. First run: open browser → user authorizes → callback captures code → exchange for tokens
   2. Subsequent runs: load tokens from .env, refresh if expired or on 401
   3. Token refresh retries once on failure before raising
+  4. Transient API failures (429 / 5xx) retry with exponential backoff
 
 Intuit OAuth endpoints (sandbox and production share the same auth server):
   - Authorization:  https://appcenter.intuit.com/connect/oauth2
@@ -14,6 +15,7 @@ Intuit OAuth endpoints (sandbox and production share the same auth server):
 
 import os
 import threading
+import time
 import webbrowser
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -22,6 +24,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 from dotenv import load_dotenv, set_key
 
+from env import env_float, env_int
 from logger import get_logger
 
 load_dotenv()
@@ -273,36 +276,97 @@ def _is_wrong_cluster(response) -> bool:
     return "Accessing Wrong Cluster" in body or 'code="130"' in body
 
 
+# Statuses that mean "Intuit could not serve this request *right now*" rather than
+# "this request is wrong". 500 is on the list because Intuit answers throttled and
+# internally-failed report requests alike with a generic 500 + errorCode 20001 —
+# a retry seconds later normally succeeds. 4xx statuses other than 429 are the
+# caller's fault and are never retried: retrying them just burns the clock.
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _retry_delay(response, fallback: float) -> float:
+    """Seconds to wait before the next attempt.
+
+    Prefers Intuit's own Retry-After header when it sends one in delta-seconds
+    form; an HTTP-date form (or anything unparseable) falls back to our own
+    exponential backoff rather than guessing at clock skew.
+    """
+    header = (response.headers.get("Retry-After") or "").strip()
+    if header:
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            pass
+    return fallback
+
+
 class QBOSession(requests.Session):
-    """A requests.Session that transparently refreshes tokens on 401 responses."""
+    """A requests.Session that transparently refreshes tokens on 401 responses and
+    retries transient Intuit failures (429 / 5xx) with exponential backoff.
+
+    The retry exists because a single transient 500 on any one of the ~10 report
+    calls used to abort the entire unattended run, so a blip lasting under a second
+    cost the business a whole delivery cycle. Retrying in the session covers every
+    caller — the P&L, aging, vendor, and balance-sheet fetchers all go through here.
+    """
 
     def request(self, method, url, **kwargs):  # noqa: D102
         if _is_token_expired():
             refresh_tokens()
 
         kwargs.setdefault("headers", {})
-        kwargs["headers"]["Authorization"] = f"Bearer {os.environ['QBO_ACCESS_TOKEN']}"
         kwargs["headers"]["Accept"] = "application/json"
 
-        response = super().request(method, url, **kwargs)
-        intuit_tid = response.headers.get("intuit_tid", "")
+        attempts = max(1, env_int("QBO_MAX_ATTEMPTS", 4))
+        base_backoff = max(0.0, env_float("QBO_RETRY_BACKOFF", 2.0))
 
-        # A 401 normally means the access token expired → refresh and retry once.
-        # But Intuit also returns 401 for fault code 130 "Accessing Wrong Cluster"
-        # (a routing error on certain report endpoints) — that is NOT an auth failure,
-        # so refreshing is useless and needlessly rotates the refresh token. Skip the
-        # refresh for wrong-cluster 401s and let the caller handle the failure.
-        if response.status_code == 401 and not _is_wrong_cluster(response):
-            log.warning(
-                "%s %s → 401 Unauthorized (intuit_tid=%s) — refreshing token and retrying",
-                method, url, intuit_tid,
-            )
-            refresh_tokens()
+        # At most one token refresh per logical request. The refresh rotates the
+        # refresh token on Intuit's side, and rotating it repeatedly inside one
+        # retry loop is exactly how a token chain gets stranded on invalid_grant.
+        refreshed = False
+
+        for attempt in range(1, attempts + 1):
             kwargs["headers"]["Authorization"] = (
                 f"Bearer {os.environ['QBO_ACCESS_TOKEN']}"
             )
+
             response = super().request(method, url, **kwargs)
             intuit_tid = response.headers.get("intuit_tid", "")
+
+            # A 401 normally means the access token expired → refresh and retry once.
+            # But Intuit also returns 401 for fault code 130 "Accessing Wrong Cluster"
+            # (a routing error on certain report endpoints) — that is NOT an auth failure,
+            # so refreshing is useless and needlessly rotates the refresh token. Skip the
+            # refresh for wrong-cluster 401s and let the caller handle the failure.
+            if (
+                response.status_code == 401
+                and not _is_wrong_cluster(response)
+                and not refreshed
+            ):
+                log.warning(
+                    "%s %s → 401 Unauthorized (intuit_tid=%s) — refreshing token and retrying",
+                    method, url, intuit_tid,
+                )
+                refresh_tokens()
+                refreshed = True
+                kwargs["headers"]["Authorization"] = (
+                    f"Bearer {os.environ['QBO_ACCESS_TOKEN']}"
+                )
+                response = super().request(method, url, **kwargs)
+                intuit_tid = response.headers.get("intuit_tid", "")
+
+            if response.status_code in _RETRYABLE_STATUSES and attempt < attempts:
+                delay = _retry_delay(response, base_backoff * 2 ** (attempt - 1))
+                log.warning(
+                    "%s %s → %s (intuit_tid=%s) — transient; retrying in %.1fs "
+                    "(attempt %d/%d)",
+                    method, url, response.status_code, intuit_tid, delay,
+                    attempt, attempts,
+                )
+                time.sleep(delay)
+                continue
+
+            break
 
         if response.status_code >= 400:
             log.error(

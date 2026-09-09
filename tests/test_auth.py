@@ -8,6 +8,7 @@ import pytest
 from auth import (
     _is_token_expired,
     _is_wrong_cluster,
+    _retry_delay,
     _persist_to_github_secrets,
     _parse_pat_expiry,
     github_pat_expiry,
@@ -250,8 +251,11 @@ class TestRefreshTokens:
             post.assert_not_called()   # never hits the network without a token
 
 
-def _http(status, tid=""):
-    return MagicMock(status_code=status, headers={"intuit_tid": tid}, text="body")
+def _http(status, tid="", retry_after=None):
+    headers = {"intuit_tid": tid}
+    if retry_after is not None:
+        headers["Retry-After"] = retry_after
+    return MagicMock(status_code=status, headers=headers, text="body")
 
 
 class TestQBOSession:
@@ -277,3 +281,111 @@ class TestQBOSession:
         assert resp.status_code == 200
         assert super_req.call_count == 2   # original + one retry
         refresh.assert_called_once()       # refreshed on the 401
+
+
+class TestRetryDelay:
+    """Retry-After is honoured when Intuit sends a usable one."""
+
+    def test_delta_seconds_header_wins(self):
+        assert _retry_delay(_http(429, retry_after="7"), fallback=2.0) == 7.0
+
+    def test_http_date_header_falls_back(self):
+        resp = _http(503, retry_after="Wed, 01 Sep 2027 20:41:29 GMT")
+        assert _retry_delay(resp, fallback=2.0) == 2.0
+
+    def test_missing_header_falls_back(self):
+        assert _retry_delay(_http(500), fallback=4.0) == 4.0
+
+    def test_negative_header_is_clamped_to_zero(self):
+        assert _retry_delay(_http(500, retry_after="-5"), fallback=2.0) == 0.0
+
+
+class TestQBOSessionTransientRetry:
+    """A transient 5xx/429 must not abort the run — the Sept 1 failure mode."""
+
+    def _live_env(self):
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        return {"QBO_TOKEN_EXPIRY": future, "QBO_ACCESS_TOKEN": "tok"}
+
+    def test_retries_500_then_succeeds(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   side_effect=[_http(500), _http(200)]) as super_req:
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+        assert super_req.call_count == 2
+        sleep.assert_called_once_with(2.0)
+
+    def test_backoff_is_exponential_across_attempts(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   side_effect=[_http(503), _http(503), _http(503), _http(200)]):
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+        assert [c.args[0] for c in sleep.call_args_list] == [2.0, 4.0, 8.0]
+
+    def test_gives_up_after_max_attempts_and_returns_last_response(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   return_value=_http(500)) as super_req:
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 500
+        assert super_req.call_count == 4      # QBO_MAX_ATTEMPTS default
+        assert sleep.call_count == 3          # no sleep after the final attempt
+
+    def test_retry_after_header_overrides_backoff(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   side_effect=[_http(429, retry_after="11"), _http(200)]):
+            QBOSession().request("GET", "https://example.com/x")
+        sleep.assert_called_once_with(11.0)
+
+    def test_attempt_count_is_configurable(self):
+        env = {**self._live_env(), "QBO_MAX_ATTEMPTS": "2"}
+        with patch.dict("os.environ", env, clear=False), \
+             patch("auth.time.sleep"), \
+             patch("requests.Session.request",
+                   return_value=_http(500)) as super_req:
+            QBOSession().request("GET", "https://example.com/x")
+        assert super_req.call_count == 2
+
+    def test_client_errors_are_not_retried(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   return_value=_http(400)) as super_req:
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 400
+        assert super_req.call_count == 1
+        sleep.assert_not_called()
+
+    def test_wrong_cluster_401_is_not_retried_or_refreshed(self):
+        resp401 = MagicMock(
+            status_code=401, headers={"intuit_tid": ""}, text=_WRONG_CLUSTER_BODY,
+        )
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.refresh_tokens") as refresh, \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request", return_value=resp401) as super_req:
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 401
+        assert super_req.call_count == 1
+        refresh.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_token_refresh_happens_at_most_once_per_request(self):
+        """A 401 that keeps coming back must not rotate the refresh token twice —
+        concurrent/repeated rotation is what strands the chain on invalid_grant."""
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.refresh_tokens") as refresh, \
+             patch("auth.time.sleep"), \
+             patch("requests.Session.request",
+                   side_effect=[_http(401), _http(500), _http(200)]):
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+        refresh.assert_called_once()
+
