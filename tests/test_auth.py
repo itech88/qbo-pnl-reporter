@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
+import requests
 
 from auth import (
     _is_token_expired,
@@ -375,6 +376,46 @@ class TestQBOSessionTransientRetry:
         assert resp.status_code == 401
         assert super_req.call_count == 1
         refresh.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_retries_connection_error_then_succeeds(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   side_effect=[requests.exceptions.ConnectionError("reset"),
+                                _http(200)]) as super_req:
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+        assert super_req.call_count == 2
+        sleep.assert_called_once_with(2.0)
+
+    def test_retries_read_timeout_then_succeeds(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep"), \
+             patch("requests.Session.request",
+                   side_effect=[requests.exceptions.ReadTimeout("slow"),
+                                _http(200)]):
+            resp = QBOSession().request("GET", "https://example.com/x")
+        assert resp.status_code == 200
+
+    def test_persistent_connection_error_is_raised_after_max_attempts(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   side_effect=requests.exceptions.ConnectionError("down")) as super_req:
+            with pytest.raises(requests.exceptions.ConnectionError):
+                QBOSession().request("GET", "https://example.com/x")
+        assert super_req.call_count == 4
+        assert sleep.call_count == 3
+
+    def test_non_transient_exception_is_not_retried(self):
+        with patch.dict("os.environ", self._live_env(), clear=False), \
+             patch("auth.time.sleep") as sleep, \
+             patch("requests.Session.request",
+                   side_effect=requests.exceptions.TooManyRedirects("loop")) as super_req:
+            with pytest.raises(requests.exceptions.TooManyRedirects):
+                QBOSession().request("GET", "https://example.com/x")
+        assert super_req.call_count == 1
         sleep.assert_not_called()
 
     def test_token_refresh_happens_at_most_once_per_request(self):

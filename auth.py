@@ -283,6 +283,14 @@ def _is_wrong_cluster(response) -> bool:
 # caller's fault and are never retried: retrying them just burns the clock.
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
+# The same blip can arrive as an exception rather than a status: a dropped
+# connection or a read that outlives the caller's timeout. Both abort the run
+# exactly as a 500 does, so both retry on the same schedule.
+_RETRYABLE_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+)
+
 
 def _retry_delay(response, fallback: float) -> float:
     """Seconds to wait before the next attempt.
@@ -330,30 +338,43 @@ class QBOSession(requests.Session):
                 f"Bearer {os.environ['QBO_ACCESS_TOKEN']}"
             )
 
-            response = super().request(method, url, **kwargs)
-            intuit_tid = response.headers.get("intuit_tid", "")
-
-            # A 401 normally means the access token expired → refresh and retry once.
-            # But Intuit also returns 401 for fault code 130 "Accessing Wrong Cluster"
-            # (a routing error on certain report endpoints) — that is NOT an auth failure,
-            # so refreshing is useless and needlessly rotates the refresh token. Skip the
-            # refresh for wrong-cluster 401s and let the caller handle the failure.
-            if (
-                response.status_code == 401
-                and not _is_wrong_cluster(response)
-                and not refreshed
-            ):
-                log.warning(
-                    "%s %s → 401 Unauthorized (intuit_tid=%s) — refreshing token and retrying",
-                    method, url, intuit_tid,
-                )
-                refresh_tokens()
-                refreshed = True
-                kwargs["headers"]["Authorization"] = (
-                    f"Bearer {os.environ['QBO_ACCESS_TOKEN']}"
-                )
+            try:
                 response = super().request(method, url, **kwargs)
                 intuit_tid = response.headers.get("intuit_tid", "")
+
+                # A 401 normally means the access token expired → refresh and retry once.
+                # But Intuit also returns 401 for fault code 130 "Accessing Wrong Cluster"
+                # (a routing error on certain report endpoints) — that is NOT an auth failure,
+                # so refreshing is useless and needlessly rotates the refresh token. Skip the
+                # refresh for wrong-cluster 401s and let the caller handle the failure.
+                if (
+                    response.status_code == 401
+                    and not _is_wrong_cluster(response)
+                    and not refreshed
+                ):
+                    log.warning(
+                        "%s %s → 401 Unauthorized (intuit_tid=%s) — refreshing token "
+                        "and retrying",
+                        method, url, intuit_tid,
+                    )
+                    refresh_tokens()
+                    refreshed = True
+                    kwargs["headers"]["Authorization"] = (
+                        f"Bearer {os.environ['QBO_ACCESS_TOKEN']}"
+                    )
+                    response = super().request(method, url, **kwargs)
+                    intuit_tid = response.headers.get("intuit_tid", "")
+            except _RETRYABLE_EXCEPTIONS as exc:
+                if attempt >= attempts:
+                    raise
+                delay = base_backoff * 2 ** (attempt - 1)
+                log.warning(
+                    "%s %s raised %s: %s — transient; retrying in %.1fs "
+                    "(attempt %d/%d)",
+                    method, url, type(exc).__name__, exc, delay, attempt, attempts,
+                )
+                time.sleep(delay)
+                continue
 
             if response.status_code in _RETRYABLE_STATUSES and attempt < attempts:
                 delay = _retry_delay(response, base_backoff * 2 ** (attempt - 1))
