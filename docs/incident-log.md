@@ -27,14 +27,14 @@ existed. [Actions run](https://github.com/itech88/qbo-pnl-reporter/actions/runs/
 - **What happened:** Withheld from delivery: A/R aging total 0.00 ≠ Balance Sheet A/R 50.00 (off by -50.00); A/R Aging detail total 50.00 ≠ aging summary 0.00 (off by +50.00).
 - **Why:** The `AgedReceivables` summary endpoint returned HTTP 200 but yielded no per-party rows, so the parsed total was zero. The `AgedReceivableDetail` endpoint and the Balance Sheet both independently reported 50.00 for the same date, which rules out a data problem and points squarely at the summary response. No "no Money/bucket columns" warning was logged, so the report did carry its bucket columns — it was the data rows the parser found nothing to read.
 - **What the system did:** Held the report. The remaining ten reports delivered normally.
-- **Outcome:** Resolved on 2026-09-09 by the self-heal described below. Not resolved at the time.
+- **Outcome:** Resolved on 2026-09-10 by the self-heal described below. Not resolved at the time.
 
 ### `guardrail_hold` · Cash Outlook
 
 - **What happened:** Withheld from delivery: upstream A/R aging did not reconcile.
 - **Why:** Cash Outlook composes a reconciled A/R summary with cash on hand and current liabilities. With A/R held, there was no trustworthy receivables figure to build a cash position from, so the hold propagated by design.
 - **What the system did:** Held the report. This is intended behaviour: a downstream report inherits the hold rather than quietly substituting an unverified input.
-- **Outcome:** Resolved on 2026-09-09 as a consequence of fixing A/R Aging. Not resolved at the time.
+- **Outcome:** Resolved on 2026-09-10 as a consequence of fixing A/R Aging. Not resolved at the time.
 
 ---
 
