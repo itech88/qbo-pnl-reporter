@@ -1,6 +1,7 @@
 """Unit tests for analytics.py — synthetic DataFrames, no API calls."""
 
 from datetime import datetime
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -12,6 +13,15 @@ from analytics import (
     run_all,
     current_month_stats,
 )
+
+
+class _Jan1Datetime(datetime):
+    """datetime whose .now() is pinned to Jan 1 (a fresh calendar year), while
+    normal construction still works — used to prove the reporting year follows the
+    data, not the wall clock."""
+    @classmethod
+    def now(cls, tz=None):
+        return datetime(_CUR_YEAR, 1, 1, 9, 0, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -217,8 +227,21 @@ class TestCurrentMonthStats:
         assert stats["report_month"] == 5
         assert stats["report_month_name"] == "May"
 
-    def test_none_when_no_current_year_income(self):
-        assert current_month_stats(self._df_through_month(0)) is None
+    def test_reports_prior_year_december_when_current_year_empty(self):
+        # RB-1: the new calendar year has no income yet (Jan 1). Rather than
+        # returning None and skipping the annual dashboard, report the prior
+        # year's December — the just-completed close the owner wants.
+        stats = current_month_stats(self._df_through_month(0))
+        assert stats is not None
+        assert stats["report_year"] == _CUR_YEAR - 1
+        assert stats["report_month"] == 12
+        assert stats["report_month_name"] == "Dec"
+
+    def test_none_when_no_income_anywhere(self):
+        # A genuinely empty pull (no income in any year) → nothing to report.
+        empty = _make_df([{"year": y, "month": m, "income": 0, "value": 0}
+                          for y in _PRIOR_YEARS + [_CUR_YEAR] for m in range(1, 13)])
+        assert current_month_stats(empty) is None
 
     def test_deviation_near_zero_when_stable(self):
         stats = current_month_stats(self._df_through_month(5))
@@ -241,3 +264,38 @@ class TestCurrentMonthStats:
         stats = current_month_stats(self._df_through_month(5), metric="absolute")
         assert stats["use_pct"] is False
         assert abs(stats["primary"] - 45000 * 0.30) < 1   # primary is the dollar value
+
+
+# ---------------------------------------------------------------------------
+# RB-1 — year-boundary: the reporting year follows the data, not the clock
+# ---------------------------------------------------------------------------
+
+class TestReportingYearBoundary:
+    """On January 1 the new calendar year has zero income rows. Keying on
+    datetime.now().year rendered an empty 'current year' and skipped the December
+    close — the year's most valuable send. The reporting year is now derived from
+    the data, so December is reported even when the clock says Jan 1."""
+
+    def _prior_year_only_df(self):
+        # Prior year fully booked; the new calendar year has no rows at all yet.
+        return _make_df([{"year": _CUR_YEAR - 1, "month": m, "income": 45000, "value": 13500}
+                         for m in range(1, 13)])
+
+    def test_mom_reports_prior_year_and_carries_year_column(self):
+        mom = mom_analysis(self._prior_year_only_df())
+        assert not mom.empty                       # not "No data for <new year> yet"
+        assert set(mom["year"]) == {_CUR_YEAR - 1}  # the year column drives the label
+        assert int(mom["month"].max()) == 12        # December present, not skipped
+
+    def test_mom_reports_december_even_when_clock_says_jan_1(self):
+        # Prove the clock is irrelevant: pin now() to Jan 1 of the new year.
+        with patch("analytics.datetime", _Jan1Datetime):
+            mom = mom_analysis(self._prior_year_only_df())
+        assert int(mom["month"].max()) == 12
+
+    def test_current_month_stats_reports_december_when_clock_says_jan_1(self):
+        with patch("analytics.datetime", _Jan1Datetime):
+            stats = current_month_stats(self._prior_year_only_df())
+        assert stats is not None
+        assert stats["report_year"] == _CUR_YEAR - 1
+        assert stats["report_month_name"] == "Dec"

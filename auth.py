@@ -46,6 +46,29 @@ ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
 # Token persistence
 # ---------------------------------------------------------------------------
 
+# Records the outcome of the most recent CI token writeback to GitHub Secrets.
+# None means "no failure" (healthy, or a local run where no writeback is
+# attempted). A string is the human-readable reason the writeback failed. The
+# scheduler reads this after delivering reports and fails the run if it is set,
+# so a rotated-but-unpersisted refresh token is caught on run #1 — while recovery
+# is a 2-minute PAT/secret fix — instead of surfacing as an invalid_grant lockout
+# on the *next* run that needs a full QBO re-bootstrap. See writeback_failed().
+_writeback_error: str | None = None
+
+
+def writeback_failed() -> str | None:
+    """Reason the last CI token writeback to GitHub Secrets failed, or None if it
+    succeeded / was not attempted (local runs). Checked by the scheduler to fail
+    the run so a stale refresh token can't hide behind a green run."""
+    return _writeback_error
+
+
+def reset_writeback_state() -> None:
+    """Clear the recorded writeback outcome. Called at the start of each run so
+    the flag reflects only the current process."""
+    global _writeback_error
+    _writeback_error = None
+
 
 def _persist_to_github_secrets(
     access_token: str, refresh_token: str, expiry_iso: str
@@ -60,13 +83,26 @@ def _persist_to_github_secrets(
 
     No-op unless both GH_PAT (a PAT with secrets:write) and GITHUB_REPOSITORY
     are present — i.e. only runs in CI, never locally.
+
+    A failed writeback here is the first domino in the invalid_grant death
+    spiral: the token was already rotated on Intuit's side, so if it isn't
+    persisted the next run authenticates with a retired refresh token. The
+    failure is recorded in the module-level `_writeback_error` (surfaced via
+    writeback_failed()) so the scheduler can fail the run loudly instead of
+    letting it stay green.
     """
+    global _writeback_error
     pat  = os.getenv("GH_PAT", "")
     repo = os.getenv("GITHUB_REPOSITORY", "")
     if not pat or not repo:
-        return
+        return  # local run — no writeback expected; leave prior state untouched
 
     import subprocess
+
+    # Reset before attempting: the outcome recorded below is what matters. If an
+    # earlier refresh in this run failed to persist but this later one succeeds,
+    # the current token *is* persisted and the run is healthy again.
+    _writeback_error = None
 
     env = {**os.environ, "GH_TOKEN": pat}
     secrets = {
@@ -85,13 +121,18 @@ def _persist_to_github_secrets(
                 capture_output=True, text=True, timeout=30,
             )
         except FileNotFoundError:
-            log.error("gh CLI not found — cannot persist %s to GitHub Secrets.", key)
+            _writeback_error = f"gh CLI not found — cannot persist {key} to GitHub Secrets."
+            log.error(_writeback_error)
             return
         except subprocess.CalledProcessError as e:
-            log.error("Failed to persist %s to GitHub Secrets: %s", key, (e.stderr or "").strip())
+            _writeback_error = (
+                f"Failed to persist {key} to GitHub Secrets: {(e.stderr or '').strip()}"
+            )
+            log.error(_writeback_error)
             return
         except subprocess.TimeoutExpired:
-            log.error("Timed out persisting %s to GitHub Secrets.", key)
+            _writeback_error = f"Timed out persisting {key} to GitHub Secrets."
+            log.error(_writeback_error)
             return
     log.info("Rotated tokens persisted to GitHub Secrets (repo=%s).", repo)
 
@@ -460,7 +501,7 @@ def initial_auth_flow() -> str:
     # When using ngrok the redirect URI hostname is the tunnel domain — we must
     # not try to bind to that. Port falls back to QBO_CALLBACK_PORT or 8080.
     host = "localhost"
-    port = int(os.getenv("QBO_CALLBACK_PORT", "8080"))
+    port = env_int("QBO_CALLBACK_PORT", 8080)
 
     import secrets
     state = secrets.token_urlsafe(16)

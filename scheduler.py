@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 import yaml
 
+from env import env_int
 from logger import get_logger
 
 log = get_logger(__name__)
@@ -84,17 +85,27 @@ def _deliver(html: str, chart_png: bytes, subject: str, cfg: dict,
 
 
 def _reporting_period(collected: dict[str, tuple]) -> tuple[int, int] | None:
-    """(year, month) of the latest current-year month with income, across the
-    collected reports — the headline period guardrails reconcile. None if no data."""
-    current_year = datetime.now().year
+    """(year, month) of the latest month with income across the collected reports —
+    the headline period guardrails reconcile. The year is the latest year that has
+    income (the reporting year), not the calendar year: on Jan 1 the December close
+    must still be reconciled, not skipped (RB-1, mirroring analytics._reporting_year).
+    None when no report has any income."""
+    reporting_year = None
+    for value in collected.values():
+        wi = value[0][value[0]["income"] > 0]
+        if not wi.empty:
+            y = int(wi["year"].max())
+            reporting_year = y if reporting_year is None else max(reporting_year, y)
+    if reporting_year is None:
+        return None
     latest = None
     for value in collected.values():
         df = value[0]
-        active = df[(df["year"] == current_year) & (df["income"] > 0)]
+        active = df[(df["year"] == reporting_year) & (df["income"] > 0)]
         if not active.empty:
             m = int(active["month"].max())
             latest = m if latest is None else max(latest, m)
-    return (current_year, latest) if latest is not None else None
+    return (reporting_year, latest) if latest is not None else None
 
 
 def _trailing_daily(series, months: int = 3) -> float | None:
@@ -112,24 +123,32 @@ def _trailing_daily(series, months: int = 3) -> float | None:
 
 
 def _trailing_daily_income(collected: dict[str, tuple]) -> float | None:
-    """Daily revenue rate from any collected report's shared income column (for DSO)."""
-    current_year = datetime.now().year
+    """Daily revenue rate from any collected report's shared income column (for DSO).
+    Keys on the reporting year (latest year with income) so DSO still computes on Jan 1."""
     for value in collected.values():
         df = value[0]
-        cur = df[(df["year"] == current_year) & (df["income"] > 0)].sort_values("month")
+        wi = df[df["income"] > 0]
+        if wi.empty:
+            continue
+        ry  = int(wi["year"].max())
+        cur = df[(df["year"] == ry) & (df["income"] > 0)].sort_values("month")
         if not cur.empty:
             return _trailing_daily(cur["income"].tolist())
     return None
 
 
 def _trailing_daily_cogs(collected: dict[str, tuple]) -> float | None:
-    """Daily spend rate from the COGS report's value column (for DPO). None if absent."""
-    current_year = datetime.now().year
+    """Daily spend rate from the COGS report's value column (for DPO). None if absent.
+    Keys on the reporting year (latest year with COGS spend) so DPO computes on Jan 1."""
     cogs = collected.get("COGS")
     if not cogs:
         return None
-    df  = cogs[0]
-    cur = df[(df["year"] == current_year) & (df["value"] > 0)].sort_values("month")
+    df    = cogs[0]
+    spent = df[df["value"] > 0]
+    if spent.empty:
+        return None
+    ry  = int(spent["year"].max())
+    cur = df[(df["year"] == ry) & (df["value"] > 0)].sort_values("month")
     return _trailing_daily(cur["value"].tolist()) if not cur.empty else None
 
 
@@ -147,11 +166,100 @@ def _section_totals(collected: dict[str, tuple], year: int, month: int) -> dict[
     return totals
 
 
+def _record_failure(name: str, tb: str) -> None:
+    """Log a report that raised, keeping the exception's last line as the signal."""
+    import incidents
+    lines = [ln for ln in (tb or "").strip().splitlines() if ln.strip()]
+    last = lines[-1] if lines else "unknown error"
+    incidents.record(incidents.Incident(
+        kind="report_failure",
+        report=name,
+        summary=f"Raised while being built or sent: {last}",
+        reasoning=incidents.explain(tb or ""),
+        remedy=("This report was skipped and the run continued, so the other "
+                "reports still went out."),
+        resolved=False,
+    ))
+
+
+def _record_holds(held: dict[str, list[str]]) -> None:
+    """Log every held report once, with the complete set of reasons it failed.
+
+    Recorded at the end of the run rather than at each check, so a report that
+    trips two guardrails produces one entry listing both rather than two partial
+    entries that each tell half the story.
+    """
+    import incidents
+    for name in sorted(held):
+        reasons = held[name]
+        joined = "; ".join(reasons)
+        incidents.record(incidents.Incident(
+            kind="guardrail_hold",
+            report=name,
+            summary=f"Withheld from delivery: {joined}",
+            reasoning=incidents.explain(joined),
+            remedy=("Not sent. A guardrail holds a report rather than deliver "
+                    "numbers that failed reconciliation, so the owner never "
+                    "receives figures the system could not verify."),
+            resolved=False,
+        ))
+
+
+def _heal_aging_from_detail(ddf, summary_total: float, bs_total: float | None,
+                            detail_total: float | None):
+    """Rebuild aging buckets from the per-document detail when the summary is unusable.
+
+    QBO's aging *summary* endpoint intermittently returns no per-party rows while
+    the detail endpoint returns the documents perfectly well. Losing the report
+    over that is a waste: the detail carries every open balance and due date the
+    summary would have bucketed.
+
+    The repair is deliberately conservative. It only runs when the Balance Sheet —
+    the ledger of record — independently agrees with the detail, so a bad summary
+    is never swapped for an equally unverified substitute. The rebuilt frame is
+    then re-checked against that same anchor, so self-healing satisfies the
+    guardrail rather than bypassing it: a derivation that does not reconcile is
+    discarded and the report is held exactly as before.
+
+    Returns (buckets_df, summary_dict) on success, or None to leave the hold in place.
+    """
+    if bs_total is None or detail_total is None:
+        return None   # no independent corroboration available — do not substitute
+
+    from guardrails import tolerance
+    tol = max(tolerance(), abs(bs_total) * 0.01)
+
+    summary_is_wrong = abs(summary_total - bs_total) > tol
+    detail_is_trusted = abs(detail_total - bs_total) <= tol
+    if not (summary_is_wrong and detail_is_trusted):
+        return None
+
+    from aging_analytics import aging_summary
+    from aging_fetcher import derive_buckets_from_detail
+
+    healed_df = derive_buckets_from_detail(ddf)
+    healed = aging_summary(healed_df)
+    if abs(healed["total"] - bs_total) > tol:
+        return None   # the rebuild did not actually reconcile; hold the report
+
+    return healed_df, healed
+
+
 def run(force: bool = False, dry_run: bool = False, report_filter: str | None = None) -> None:
     today      = datetime.now()
     run_id     = str(uuid.uuid4())[:8]
     started_at = time.monotonic()
     env        = os.getenv("QBO_ENVIRONMENT", "sandbox")
+
+    # Start each run with a clean token-writeback state; a failed writeback during
+    # this run (CI only) is recorded in auth and fails the run at the end (SEC-2).
+    from auth import reset_writeback_state
+    reset_writeback_state()
+
+    # The incident buffer is module-level too; clear it so a long-lived process
+    # (tests, a local REPL) can't leak one run's incidents into the next.
+    import incidents
+    incidents.reset()
 
     log.info("━" * 60)
     log.info("EXECUTION START — run_id=%s env=%s dry_run=%s pid=%d",
@@ -205,7 +313,7 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
              len(send_outlook), len(send_score))
 
     # ── Step 1+2: Fetch P&L once and build analytics (skip if nothing needs it)
-    from analytics import run_all, current_month_stats
+    from analytics import run_all, current_month_stats, variance_threshold
     from report import build_report, build_scorecard
 
     collected: dict[str, tuple] = {}   # name -> (df, mom, yoy, flags)
@@ -274,9 +382,11 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
             _deliver(html, chart_png, subject, cfg, dry_run, run_id)
         except Exception:
+            _tb = traceback.format_exc()
             failed_names.append(name)
             log.error("[%s]   FAILED to process report '%s':\n%s",
-                      run_id, name, traceback.format_exc())
+                      run_id, name, _tb)
+            _record_failure(name, _tb)
 
     # ── Step 4: Vendor-breakdown reports (separate endpoint) ─────────────────
     if send_vendor:
@@ -318,12 +428,16 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                     subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
                     _deliver(html, chart_png, subject, cfg, dry_run, run_id)
                 except Exception:
+                    _tb = traceback.format_exc()
                     failed_names.append(name)
                     log.error("[%s]   FAILED vendor report '%s':\n%s",
-                              run_id, name, traceback.format_exc())
+                              run_id, name, _tb)
+                    _record_failure(name, _tb)
         except Exception:
+            _tb = traceback.format_exc()
             failed_names.append("vendor detail fetch")
-            log.error("[%s]   FAILED to fetch vendor detail:\n%s", run_id, traceback.format_exc())
+            log.error("[%s]   FAILED to fetch vendor detail:\n%s", run_id, _tb)
+            _record_failure("vendor detail fetch", _tb)
 
     # ── Step 4.5: Balance-sheet snapshot reports (A/R + A/P aging) ────────────
     # The Balance Sheet is fetched once and used two ways: its own A/R / A/P lines
@@ -369,6 +483,46 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                 summ          = aging_summary(bdf)
                 detail_avail  = raw.get("detail") is not None
                 bs_total      = bs.get(_bs_key[side])
+                detail_total  = (float(ddf["open_balance"].sum())
+                                 if detail_avail and not ddf.empty else
+                                 (0.0 if detail_avail else None))
+
+                # Self-heal before reconciling: a summary that returned no rows can
+                # be rebuilt from the detail, provided the Balance Sheet vouches for
+                # the detail. See _heal_aging_from_detail for why that guard matters.
+                repair = _heal_aging_from_detail(ddf, summ["total"], bs_total, detail_total)
+                if repair is not None:
+                    broken_total = summ["total"]
+                    bdf, summ = repair
+                    detail_total = summ["total"]   # the buckets now *are* the detail
+                    log.warning(
+                        "[%s]   SELF-HEALED %s — aging summary returned %.2f against a "
+                        "Balance Sheet %s of %.2f; rebuilt the buckets from the "
+                        "%d open document(s) in the detail report, which the Balance "
+                        "Sheet corroborates. Report delivered.",
+                        run_id, nm, broken_total, _label[side], bs_total, len(ddf),
+                    )
+                    incidents.record(incidents.Incident(
+                        kind="self_heal",
+                        report=nm,
+                        summary=(
+                            f"The {_label[side]} aging summary endpoint returned "
+                            f"{broken_total:,.2f} while the Balance Sheet showed "
+                            f"{bs_total:,.2f} for the same date."
+                        ),
+                        reasoning=incidents.explain(
+                            f"aging total {broken_total:.2f} != Balance Sheet "
+                            f"{bs_total:.2f}"
+                        ),
+                        remedy=(
+                            "Rebuilt the aging buckets from the per-document detail "
+                            "report, which the Balance Sheet independently "
+                            "corroborates, then re-ran the same reconciliation "
+                            "against the Balance Sheet before sending. The report "
+                            "was delivered rather than held."
+                        ),
+                        resolved=True,
+                    ))
 
                 reasons: list[str] = []
                 anchored = False
@@ -376,8 +530,7 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                     reasons += reconcile_balance_sheet(bs_total, summ["total"], label=_label[side])
                     anchored = True
                 if detail_avail:
-                    detail_total = float(ddf["open_balance"].sum()) if not ddf.empty else 0.0
-                    reasons += reconcile_aging(summ["total"], detail_total, label=nm)
+                    reasons += reconcile_aging(summ["total"], detail_total or 0.0, label=nm)
                     anchored = True
                 if not anchored:
                     reasons.append("no reconciliation anchor — Balance Sheet line and detail "
@@ -401,8 +554,10 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                     subject = cfg["subject"].format(month=today.strftime("%B"), year=today.year)
                     _deliver(html, chart_png, subject, cfg, dry_run, run_id)
             except Exception:
+                _tb = traceback.format_exc()
                 failed_names.append(nm)
-                log.error("[%s]   FAILED aging '%s':\n%s", run_id, nm, traceback.format_exc())
+                log.error("[%s]   FAILED aging '%s':\n%s", run_id, nm, _tb)
+                _record_failure(nm, _tb)
 
     # ── Step 4.6: Cash Outlook — composes reconciled A/R + cash on hand + current liabilities
     for oc in send_outlook:
@@ -431,14 +586,16 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
             subject = oc["subject"].format(month=today.strftime("%B"), year=today.year)
             _deliver(html, chart_png, subject, oc, dry_run, run_id)
         except Exception:
+            _tb = traceback.format_exc()
             failed_names.append(nm)
-            log.error("[%s]   FAILED cash outlook '%s':\n%s", run_id, nm, traceback.format_exc())
+            log.error("[%s]   FAILED cash outlook '%s':\n%s", run_id, nm, _tb)
+            _record_failure(nm, _tb)
 
     # ── Step 5: Build and send scorecard(s) ──────────────────────────────────
     for sc_cfg in send_score:
         try:
             log.info("[%s] ── Scorecard: %s ──", run_id, sc_cfg["name"])
-            threshold = float(os.getenv("COGS_VARIANCE_THRESHOLD", "0.05"))
+            threshold = variance_threshold()
             metrics_data = []
             for metric_name in sc_cfg.get("includes", []):
                 if metric_name in held:
@@ -462,14 +619,18 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                 log.warning("[%s]   Scorecard has no metric data — skipping.", run_id)
                 continue
 
-            html, chart_png = build_scorecard(metrics_data, sc_cfg)
+            # Pass the threshold the metrics were scored against, so the scorecard's
+            # status bands and the anomaly flags can't drift apart (CQ-6).
+            html, chart_png = build_scorecard(metrics_data, sc_cfg, threshold=threshold)
             log.info("[%s]   Scorecard HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
             subject = sc_cfg["subject"].format(month=today.strftime("%B"), year=today.year)
             _deliver(html, chart_png, subject, sc_cfg, dry_run, run_id)
         except Exception:
+            _tb = traceback.format_exc()
             failed_names.append(sc_cfg["name"])
             log.error("[%s]   FAILED scorecard '%s':\n%s",
-                      run_id, sc_cfg["name"], traceback.format_exc())
+                      run_id, sc_cfg["name"], _tb)
+            _record_failure(sc_cfg["name"], _tb)
 
     elapsed = time.monotonic() - started_at
     failures = len(failed_names)
@@ -482,23 +643,86 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
              run_id, total_reports, len(held_names), failures, total_anomalies, elapsed, not dry_run)
     log.info("━" * 60)
 
+    # A CI token writeback that failed this run means the rotated refresh token
+    # never reached GitHub Secrets — the next run would hit invalid_grant. None on
+    # local runs and clean CI runs.
+    from auth import writeback_failed
+    wb_error = writeback_failed()
+
+    # RB-5: operator alerts are SMTP-only and independent of EMAIL_PROVIDER. If
+    # those credentials were dropped (e.g. after moving reports to SendGrid/SES),
+    # every failure/hold/PAT alert would silently no-op — the safety net vanishing
+    # exactly when the config changed. Surface it through the SMTP-independent
+    # heartbeat so an external monitor still catches it.
+    from mailer import alerting_configured
+    alerts_down = not dry_run and not alerting_configured()
+    if alerts_down:
+        log.error("[%s] ALERTING CHANNEL DOWN — SMTP credentials for operator alerts "
+                  "are not configured; failure/hold/PAT alerts would silently no-op. "
+                  "Reports still send. Pinging heartbeat /fail so the dead-man's-switch "
+                  "surfaces this (RB-5).", run_id)
+
     if not dry_run:
         _check_pat_expiry(run_id)
-        # Dead-man's-switch: a clean run pings OK; any held/failed report pings /fail.
-        _ping_heartbeat(run_id, success=not (failures or held_names))
+        # Dead-man's-switch: a clean run pings OK; a held/failed report, a failed
+        # token writeback, or a down alert channel pings /fail.
+        _ping_heartbeat(run_id,
+                        success=not (failures or held_names or wb_error or alerts_down))
 
     if held_names:
         log.error("[%s] %d report(s) HELD by guardrails (not delivered): %s",
                   run_id, len(held_names), ", ".join(held_names))
     if failures:
         log.error("[%s] %d report(s) FAILED — see errors above.", run_id, failures)
+    if wb_error:
+        log.error("[%s] TOKEN WRITEBACK FAILED — the rotated QBO refresh token was not "
+                  "persisted to GitHub Secrets; the next run will fail with invalid_grant "
+                  "until this is fixed. Reason: %s", run_id, wb_error)
+
+    # Every held report becomes one incident carrying its full reason list. Done
+    # here, after all checks have run, so a report that trips two guardrails is
+    # recorded once with both reasons rather than twice with one each.
+    _record_holds(held)
+
+    if wb_error:
+        incidents.record(incidents.Incident(
+            kind="report_failure",
+            report=None,
+            summary=f"The rotated QBO refresh token was not written back: {wb_error}",
+            reasoning=incidents.explain(wb_error),
+            remedy=("Reports for this run already went out, but the next run will "
+                    "fail on an expired token chain until the PAT or secret is "
+                    "repaired. The run is failed deliberately so this surfaces now, "
+                    "while recovery is still a secret fix rather than a re-consent."),
+            resolved=False,
+        ))
+
+    # Append this run's incidents to docs/incident-log.md. The workflow commits the
+    # file, so the record outlives both the runner and the Actions log retention.
+    incidents.flush(run_id, f"{env}, dry run" if dry_run else env,
+                    run_url=os.getenv("RUN_URL") or None)
 
     if (failures or held_names) and not dry_run:
         _alert_problems(today, env, run_id, failed_names, held)
+    if wb_error and not dry_run:
+        _alert_failure(
+            "⚠️ QBO token writeback FAILED — fix before the next run",
+            "The QBO refresh token was rotated on this run but could NOT be written back "
+            "to GitHub Secrets. Reports already went out, but the NEXT scheduled run will "
+            "fail with invalid_grant — and require a full QBO re-consent — unless this is "
+            "fixed first.\n\n"
+            f"Reason: {wb_error}\n\n"
+            "Most likely the GH_PAT expired or lost Secrets:write. Rotate/repair the PAT, "
+            "then trigger any report manually and confirm the logs show "
+            "'Rotated tokens persisted to GitHub Secrets'.\n\n"
+            f"Run id: {run_id}\nEnvironment: {env}",
+        )
 
     # Holds fail a live run (so the issue is visible) but never a dry run, which is
-    # only validating; an outright failure exits non-zero in either mode.
-    if failures or (held_names and not dry_run):
+    # only validating. An outright failure or a failed token writeback exits non-zero
+    # in either mode — a stale refresh token is dangerous even after a dry run, which
+    # still rotates the token in CI.
+    if failures or wb_error or (held_names and not dry_run):
         sys.exit(1)
 
 
@@ -520,7 +744,7 @@ def _check_pat_expiry(run_id: str) -> None:
         if expiry is None:
             return  # no PAT (local), unreachable, or non-expiring — nothing to warn
 
-        warn_days = int(os.getenv("GH_PAT_EXPIRY_WARN_DAYS", "30"))
+        warn_days = env_int("GH_PAT_EXPIRY_WARN_DAYS", 30)
         days_left = (expiry - datetime.now(timezone.utc)).days
 
         if days_left > warn_days:
@@ -633,6 +857,30 @@ if __name__ == "__main__":
     except Exception:
         tb = traceback.format_exc()
         log.error("FATAL ERROR — pipeline aborted:\n%s", tb)
+
+        # An abort is the incident most worth recording: nothing was delivered, and
+        # the Actions log that explains why ages out. run() never reached its own
+        # flush, so record and flush here.
+        try:
+            import incidents
+            lines = [ln for ln in tb.strip().splitlines() if ln.strip()]
+            incidents.record(incidents.Incident(
+                kind="abort",
+                report=None,
+                summary=("The pipeline aborted before delivering anything: "
+                         + (lines[-1] if lines else "unknown error")),
+                reasoning=incidents.explain(tb),
+                remedy=("No reports were sent. Every report in the run was lost, "
+                        "not just the one that failed."),
+                resolved=False,
+            ))
+            incidents.flush(
+                "aborted", os.getenv("QBO_ENVIRONMENT", "sandbox"),
+                run_url=os.getenv("RUN_URL") or None,
+            )
+        except Exception:  # noqa: BLE001 — never mask the original failure
+            log.exception("Could not record the abort incident.")
+
         if not args.dry_run:
             _alert_failure(
                 "QBO reports FATAL ERROR — pipeline aborted",

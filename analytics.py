@@ -14,12 +14,22 @@ metric parameter controls anomaly detection logic:
   'both'     — flag on value_pct deviation (same as ratio)
 """
 
-import os
 from datetime import datetime
 
 import pandas as pd
 
-_THRESHOLD = float(os.getenv("COGS_VARIANCE_THRESHOLD", "0.05"))
+from env import env_float
+
+# Default anomaly threshold, read at *call* time (see variance_threshold). Reading
+# it at import time would crash the process on an empty COGS_VARIANCE_THRESHOLD —
+# which is exactly what CI injects for a referenced-but-unset secret (RB-3).
+_DEFAULT_THRESHOLD = 0.05
+
+
+def variance_threshold() -> float:
+    """The anomaly/variance threshold. Single accessor shared by the analytics,
+    scorecard and rendering layers so the default lives in exactly one place."""
+    return env_float("COGS_VARIANCE_THRESHOLD", _DEFAULT_THRESHOLD)
 
 
 # ---------------------------------------------------------------------------
@@ -35,22 +45,44 @@ def _month_abbr(month_num: int) -> str:
     return datetime(2000, month_num, 1).strftime("%b")
 
 
+def _reporting_year(df: pd.DataFrame) -> int:
+    """The year the reports should headline: the latest year that actually has
+    income, read from the data rather than the wall clock.
+
+    On January 1 the new calendar year has no income rows yet, so keying on
+    ``datetime.now().year`` would render an empty "current year" and skip the
+    December close — the single most valuable send of the year (RB-1). Deriving
+    the year from the data instead extends the just-completed-month fallback
+    already used mid-month across the year boundary. Falls back to the latest
+    year present, then the calendar year, only when there is no income at all
+    (a genuinely empty pull)."""
+    with_income = df[df["income"] > 0]
+    if not with_income.empty:
+        return int(with_income["year"].max())
+    if not df.empty:
+        return int(df["year"].max())
+    return datetime.now().year
+
+
 # ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
 
 def mom_analysis(df: pd.DataFrame, metric: str = "ratio") -> pd.DataFrame:
     """
-    Month-by-month breakdown for the current calendar year.
-    Returns columns: month, month_name, income, value, value_pct
-    value_pct is always computed; template decides whether to display it.
+    Month-by-month breakdown for the reporting year (the latest year with income,
+    not necessarily the calendar year — see _reporting_year).
+    Returns columns: year, month, month_name, income, value, value_pct
+    The `year` column lets the renderer label the chart/tables with the reporting
+    year rather than a frozen calendar year. value_pct is always computed; the
+    template decides whether to display it.
     """
-    current_year = datetime.now().year
+    current_year = _reporting_year(df)
     cur = df[df["year"] == current_year].copy()
     cur = cur.sort_values("month").reset_index(drop=True)
     cur["value_pct"]   = _value_pct(cur)
     cur["month_name"]  = cur["month"].apply(_month_abbr)
-    return cur[["month", "month_name", "income", "value", "value_pct"]]
+    return cur[["year", "month", "month_name", "income", "value", "value_pct"]]
 
 
 def yoy_analysis(df: pd.DataFrame) -> pd.DataFrame:
@@ -84,18 +116,25 @@ def yoy_analysis(df: pd.DataFrame) -> pd.DataFrame:
 def flag_anomalies(
     df: pd.DataFrame,
     metric: str = "ratio",
-    threshold: float = _THRESHOLD,
+    threshold: float | None = None,
 ) -> pd.DataFrame:
     """
     Flag months where the current year deviates from the 3-year monthly average.
 
     For 'ratio' / 'both': flags on value_pct deviation (percentage points).
     For 'absolute': flags on relative deviation of value from 3-yr mean.
+
+    `threshold` defaults to variance_threshold() — resolved on each call rather
+    than baked into the signature at import, so an empty env var can't crash the
+    module and reruns pick up config changes.
     """
+    if threshold is None:
+        threshold = variance_threshold()
+
     enriched = df.copy()
     enriched["value_pct"] = _value_pct(enriched)
 
-    current_year = datetime.now().year
+    current_year = _reporting_year(df)
     current      = enriched[enriched["year"] == current_year].set_index("month")
     historical   = enriched[enriched["year"] != current_year]
 
@@ -145,7 +184,7 @@ def flag_anomalies(
 def current_month_stats(
     df: pd.DataFrame,
     metric: str = "ratio",
-    threshold: float = _THRESHOLD,
+    threshold: float | None = None,   # accepted for call-site symmetry; unused here
 ) -> dict | None:
     """
     Extract key stats for the most recently completed month with income data.
@@ -153,16 +192,17 @@ def current_month_stats(
 
     On the 1st of the month the current month has no data yet, so this
     correctly falls back to the prior month — the just-completed period
-    the owner actually wants to review.
-    Returns None if no income data exists for the current year.
+    the owner actually wants to review. The same fallback carries across the
+    year boundary: on January 1 the reporting year is the prior year, so the
+    December close is reported rather than skipped (RB-1).
+    Returns None only when no income data exists in any year (an empty pull).
     """
-    today        = datetime.now()
-    current_year = today.year
+    current_year = _reporting_year(df)
 
     enriched = df.copy()
     enriched["value_pct"] = _value_pct(enriched)
 
-    # Most recent month in the current year that has actual income
+    # Most recent month in the reporting year that has actual income
     active = enriched[(enriched["year"] == current_year) & (enriched["income"] > 0)]
     if active.empty:
         return None
@@ -179,6 +219,7 @@ def current_month_stats(
     deviation = float(cur_stat - avg_3yr) if not pd.isna(avg_3yr) else None
 
     return {
+        "report_year":       current_year,
         "report_month":      report_month,
         "report_month_name": _month_abbr(report_month),
         "current_abs":       float(cur_row["value"]),

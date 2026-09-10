@@ -12,6 +12,19 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  # Serialize every QBO-token-refreshing workflow onto one shared queue so no two
+  # runs rotate the refresh token concurrently — a concurrent rotation strands the
+  # whole token chain on invalid_grant and forces a full QBO re-bootstrap. Runs
+  # queue instead of cancelling: each must finish its own token writeback.
+  group: qbo-token-chain
+  cancel-in-progress: false
+
+permissions:
+  # contents: write is needed to commit docs/incident-log.md back to the repo.
+  # Deliberately the only elevated scope: everything else stays at the default.
+  contents: write
+
 jobs:
   send-report:
     runs-on: ubuntu-latest
@@ -46,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -86,9 +101,10 @@ jobs:
           retention-days: 3
 
       # Infra-level safety net: catches failures the Python process can't
-      # self-report (process killed, dependency install failure, the token
-      # writeback step itself). Python-level failures already send a detailed
-      # in-process alert; this may add a second, generic notification.
+      # self-report (process killed, dependency install failure). A failed token
+      # writeback now fails the run from inside the process and sends its own
+      # alert (SEC-2); Python-level failures likewise send a detailed in-process
+      # alert, so this step may add a second, generic notification.
       - name: Notify on failure
         if: ${{ failure() && github.event.inputs.dry_run != 'true' }}
         env:
@@ -105,3 +121,33 @@ jobs:
               "install, or a killed process).",
           )
           PY
+
+      # The incident log is the system's memory of its own failures, and the runner
+      # is thrown away when the job ends. Commit it back so the record outlives both
+      # the runner and the Actions log retention window. This runs on failure too —
+      # a failed run is precisely the one worth recording. [skip ci] stops an
+      # incident entry from re-triggering the test workflow.
+      - name: Commit incident log
+        if: always()
+        run: |
+          if [ -z "$(git status --porcelain docs/incident-log.md)" ]; then
+            echo "No new incidents to record."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/incident-log.md
+          git commit -m "Record run incidents in the incident log [skip ci]"
+          # Another report workflow may have landed an entry while this one ran.
+          for attempt in 1 2 3; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" \
+               && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "Push attempt ${attempt} failed; retrying."
+            sleep 5
+          done
+          # Never mask the run's real outcome behind a bookkeeping failure. The
+          # entry is still visible in this run's log output.
+          echo "Could not push the incident log after 3 attempts."
+          exit 0

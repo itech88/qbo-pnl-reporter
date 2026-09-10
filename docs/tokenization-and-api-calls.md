@@ -162,25 +162,27 @@ we store as the secret `GH_PAT`, narrowly scoped to only write secrets on only t
 repository. Every token in the system rotates itself except this one — which means it
 is also the system's one quiet single point of failure, and worth understanding plainly.
 
-If the `GH_PAT` ever expires without being replaced, the failure is **delayed and
-two-staged**, which can be confusing if you don't expect it. On the *first* run after
-the PAT expires, the report still sends and the run looks **green** — only the
-writeback fails, leaving a single error line in the log and freezing the stored refresh
-token. On the *next* run, roughly two weeks later, authentication fails outright,
-because QuickBooks rotated the refresh token on that first run and retired the frozen
-copy we never updated. At that point reports stop, and recovery requires *both* issuing
-a new PAT *and* re-doing the one-time QuickBooks consent to mint fresh tokens — because
-the stored QuickBooks refresh token is, by then, genuinely dead. The practical lesson is
-prevention: rotate the PAT *before* it expires and you simply swap one value; let it
-lapse and you have a two-step recovery. (The exact procedure lives in the README
-runbook.)
+If the `GH_PAT` ever expires without being replaced, the underlying failure is **delayed
+and two-staged**, which is what makes it confusing if you don't expect it. On the *first*
+run after the PAT expires, the report still sends — but the writeback fails, and the
+rotated refresh token is never persisted. Left unguarded, that run would look **green**
+(just a single error line in the log), and the *next* run, roughly two weeks later, would
+fail authentication outright: QuickBooks rotated the refresh token on that first run and
+retired the frozen copy we never updated, so recovery would then require *both* a new PAT
+*and* re-doing the one-time QuickBooks consent. To stop that first domino from falling
+silently, the pipeline now **fails the run and emails an alert the moment a writeback
+fails** — turning the deceptive green into a loud red while recovery is still a two-minute
+PAT swap, not a full re-bootstrap. The practical lesson is unchanged: rotate the PAT
+*before* it expires and you simply swap one value. (The exact procedure lives in the
+README runbook.)
 
 Finally, because an unattended system that fails silently is worse than useless, the
 solution **alerts on failure**. If any report errors, the others still run (one failure
 doesn't sink the batch), the run is marked failed so it's visible, and an email goes out
-naming what broke. A second, infrastructure-level safety net catches the rarer failures
-the program can't report on its own — such as the machine being killed mid-run, or the
-writeback step itself failing. Taken together, these pieces are what let a financial
+naming what broke — including a failed token writeback, which now fails the run from
+inside the process rather than passing silently. A second, infrastructure-level safety
+net catches the rarer failures the program can't report on its own — such as the machine
+being killed mid-run, or a dependency failing to install. Taken together, these pieces are what let a financial
 integration run month after month with no one watching: short-lived keycards for daily
 use, a private long-lived arrangement to renew them, a secure lockbox to carry that
 arrangement across disposable machines, and a smoke alarm for the one wire that can't

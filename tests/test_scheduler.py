@@ -146,6 +146,11 @@ def pipe():
             "vbdf":   p("vendor_fetcher.build_vendor_dataframe", return_value=vendor_df),
             "send":   p("mailer.send_report"),
             "alert":  p("mailer.send_failure_alert", return_value=True),
+            # Alerting is healthy by default. Without this the check reads ambient
+            # SMTP env vars, so the suite passed on a developer machine with a
+            # populated .env and failed in CI, which has none — the RB-5 guard
+            # fired and every "clean run" assertion saw a /fail heartbeat.
+            "alertcfg": p("mailer.alerting_configured", return_value=True),
         }
         p("auth.github_pat_expiry", return_value=None)  # PAT check no-ops
         m["dt"].now.return_value = datetime(2026, 6, 16, 12, 0, 0)  # the 16th; May complete
@@ -269,6 +274,19 @@ class TestGuardrails:
         hb.assert_called_once()
         assert hb.call_args.args[0] == "https://hc.example/abc"        # base = success
 
+    def test_heartbeat_fail_when_the_alert_channel_is_down(self, pipe):
+        """RB-5: losing the SMTP credentials must not fail silently.
+
+        Reports still send, but every failure/hold alert would no-op, so the loss
+        of the safety net is routed to the SMTP-independent heartbeat instead.
+        """
+        pipe["alertcfg"].return_value = False
+        with patch.dict("os.environ", {"HEARTBEAT_URL": "https://hc.example/abc"}, clear=False), \
+             patch("requests.get") as hb:
+            scheduler.run(force=True)
+        pipe["send"].assert_called()                                   # reports still go out
+        assert hb.call_args.args[0] == "https://hc.example/abc/fail"
+
     def test_heartbeat_fail_on_hold(self, pipe):
         pipe["bdf"].side_effect = _bad_cogs_df(300000.0)
         with patch.dict("os.environ", {"HEARTBEAT_URL": "https://hc.example/abc"}, clear=False), \
@@ -285,3 +303,75 @@ class TestGuardrails:
         pipe["bdf"].side_effect = _bad_cogs_df(300000.0, month=5)        # 600% but MTD
         scheduler.run(force=True)                                        # must NOT raise
         pipe["report"].assert_called_once()                             # COGS still delivered
+
+
+class TestReportingPeriodYearBoundary:
+    """RB-1 at the orchestration layer: the guardrail anchor period and the
+    DSO/DPO daily rates must follow the reporting year (latest month with income),
+    so December is still reconciled and rated on a Jan-1 run instead of dropping to
+    None just because the calendar year rolled over."""
+
+    def _collected(self, year, months, value=9000.0):
+        df = pd.DataFrame([{"year": year, "month": m, "income": 50000.0, "value": value}
+                           for m in months])
+        return {"COGS": (df, None, None, [])}
+
+    def test_reporting_period_picks_prior_year_december(self):
+        # Prior year fully booked, the new calendar year empty → (prior_year, 12).
+        collected = self._collected(2026, range(1, 13))
+        assert scheduler._reporting_period(collected) == (2026, 12)
+
+    def test_reporting_period_none_without_income(self):
+        df = pd.DataFrame([{"year": 2026, "month": 12, "income": 0.0, "value": 0.0}])
+        assert scheduler._reporting_period({"COGS": (df, None, None, [])}) is None
+
+    def test_trailing_daily_income_uses_reporting_year(self):
+        # 3 trailing months of $50k/mo over 30 days → 50000/30 daily rate.
+        collected = self._collected(2026, range(1, 13))
+        rate = scheduler._trailing_daily_income(collected)
+        assert rate is not None and abs(rate - 50000.0 / 30.0) < 1e-6
+
+    def test_trailing_daily_cogs_uses_reporting_year(self):
+        collected = self._collected(2026, range(1, 13), value=9000.0)
+        rate = scheduler._trailing_daily_cogs(collected)
+        assert rate is not None and abs(rate - 9000.0 / 30.0) < 1e-6
+
+
+class TestTokenWritebackGuard:
+    """SEC-2: a failed CI token writeback fails the run loudly — even when every
+    report was delivered — so a rotated-but-unpersisted refresh token can't hide
+    behind a green run and detonate as invalid_grant on the next run."""
+
+    def test_failure_exits_nonzero_and_alerts(self, pipe):
+        with patch("auth.writeback_failed",
+                   return_value="Timed out persisting QBO_REFRESH_TOKEN to GitHub Secrets."), \
+             pytest.raises(SystemExit):
+            scheduler.run(force=True)
+        assert pipe["send"].call_count == 3              # reports still went out this run
+        pipe["alert"].assert_called_once()               # …but the run alerts and fails
+        subject, body = pipe["alert"].call_args.args[:2]
+        assert "writeback" in subject.lower()
+        assert "invalid_grant" in body                   # spells out the next-run consequence
+
+    def test_failure_pings_heartbeat_fail(self, pipe):
+        with patch("auth.writeback_failed", return_value="boom"), \
+             patch.dict("os.environ", {"HEARTBEAT_URL": "https://hc.example/abc"}, clear=False), \
+             patch("requests.get") as hb, pytest.raises(SystemExit):
+            scheduler.run(force=True)
+        assert hb.call_args.args[0] == "https://hc.example/abc/fail"
+
+    def test_failure_fails_dry_run_but_stays_email_silent(self, pipe, tmp_path):
+        # A CI dry run still rotates the token, so a failed writeback is just as
+        # dangerous there — fail the run, but keep dry runs email-silent.
+        with patch("scheduler._preview_path",
+                   side_effect=lambda name: str(tmp_path / f"preview_{name}.html")), \
+             patch("auth.writeback_failed", return_value="boom"), \
+             pytest.raises(SystemExit):
+            scheduler.run(force=True, dry_run=True)
+        pipe["send"].assert_not_called()                 # no report email in a dry run
+        pipe["alert"].assert_not_called()                # …and no alert email either
+
+    def test_clean_writeback_does_not_fail_run(self, pipe):
+        with patch("auth.writeback_failed", return_value=None):
+            scheduler.run(force=True)                     # must NOT raise
+        pipe["alert"].assert_not_called()

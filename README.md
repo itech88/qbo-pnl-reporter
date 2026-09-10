@@ -70,6 +70,11 @@ in Gherkin, and
 [docs/tokenization-and-api-calls.md](docs/tokenization-and-api-calls.md) for a
 plain-language explanation of how API tokens and authentication work here.
 
+[docs/incident-log.md](docs/incident-log.md) is the running record of every run
+that failed, held a report, or repaired itself, with the reasoning behind each.
+The pipeline writes it and the workflow commits it, so it is the first place to
+look when something has gone wrong before.
+
 ---
 
 ## Module map

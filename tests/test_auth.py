@@ -6,6 +6,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 import requests
 
+import subprocess
+
 from auth import (
     _is_token_expired,
     _is_wrong_cluster,
@@ -14,8 +16,19 @@ from auth import (
     _parse_pat_expiry,
     github_pat_expiry,
     refresh_tokens,
+    reset_writeback_state,
+    writeback_failed,
     QBOSession,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_writeback_state():
+    """The writeback outcome is module-level global state; keep it from leaking
+    between tests in either direction."""
+    reset_writeback_state()
+    yield
+    reset_writeback_state()
 
 
 _WRONG_CLUSTER_BODY = (
@@ -138,6 +151,61 @@ class TestPersistToGithubSecrets:
              patch("subprocess.run", side_effect=FileNotFoundError()):
             # Must not raise
             _persist_to_github_secrets("acc", "ref", "exp")
+
+
+class TestWritebackFailureTracking:
+    """SEC-2: a failed CI writeback must be *recorded* (not just logged) so the
+    scheduler can fail the run instead of leaving a green run that holds a rotated
+    but unpersisted refresh token — the first domino in the invalid_grant spiral."""
+
+    _CI_ENV = {"GH_PAT": "pat123", "GITHUB_REPOSITORY": "owner/repo"}
+
+    def test_success_leaves_no_error(self):
+        with patch.dict("os.environ", self._CI_ENV, clear=False), \
+             patch("subprocess.run", return_value=MagicMock(returncode=0)):
+            _persist_to_github_secrets("ACC", "REF", "EXP")
+        assert writeback_failed() is None
+
+    def test_local_run_leaves_state_untouched(self):
+        # No PAT/repo → no writeback attempted → a healthy prior state is preserved
+        with patch.dict("os.environ", {"GH_PAT": "", "GITHUB_REPOSITORY": ""}, clear=False), \
+             patch("subprocess.run") as run:
+            _persist_to_github_secrets("acc", "ref", "exp")
+            run.assert_not_called()
+        assert writeback_failed() is None
+
+    def test_called_process_error_is_recorded(self):
+        err = subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: Forbidden")
+        with patch.dict("os.environ", self._CI_ENV, clear=False), \
+             patch("subprocess.run", side_effect=err):
+            _persist_to_github_secrets("acc", "ref", "exp")
+        reason = writeback_failed()
+        assert reason is not None
+        assert "QBO_ACCESS_TOKEN" in reason   # names the secret that failed to write
+        assert "Forbidden" in reason          # surfaces gh's stderr for triage
+
+    def test_gh_missing_is_recorded(self):
+        with patch.dict("os.environ", self._CI_ENV, clear=False), \
+             patch("subprocess.run", side_effect=FileNotFoundError()):
+            _persist_to_github_secrets("acc", "ref", "exp")
+        assert "gh CLI not found" in (writeback_failed() or "")
+
+    def test_timeout_is_recorded(self):
+        with patch.dict("os.environ", self._CI_ENV, clear=False), \
+             patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 30)):
+            _persist_to_github_secrets("acc", "ref", "exp")
+        assert "Timed out" in (writeback_failed() or "")
+
+    def test_later_success_clears_earlier_failure(self):
+        # A retried refresh that finally persists the current token → healthy again:
+        # only the *last* rotation's persistence status matters.
+        with patch.dict("os.environ", self._CI_ENV, clear=False):
+            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 30)):
+                _persist_to_github_secrets("acc", "ref", "exp")
+            assert writeback_failed() is not None
+            with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                _persist_to_github_secrets("acc2", "ref2", "exp2")
+            assert writeback_failed() is None
 
 
 class TestParsePatExpiry:

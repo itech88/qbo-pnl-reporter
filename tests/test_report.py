@@ -18,14 +18,15 @@ from report import (
     build_scorecard,
     _fmt_currency,
     _fmt_pct,
-    _CURRENT_YEAR,
 )
 
 # PNG file signature — every chart must be a real PNG.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
-# Build fixtures relative to the year report.py captured at import, so the
-# "current year" bars always have data regardless of when the suite runs.
+# Build fixtures relative to the current calendar year, so the "current year"
+# bars always have data regardless of when the suite runs. (report.py now derives
+# the reporting year from the data rather than freezing it at import.)
+_CURRENT_YEAR = datetime.now().year
 _YEARS = [_CURRENT_YEAR - 2, _CURRENT_YEAR - 1, _CURRENT_YEAR]
 
 
