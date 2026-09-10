@@ -219,6 +219,75 @@ def _parse_detail(
 
 
 # ---------------------------------------------------------------------------
+# Deriving buckets from the detail (the summary's fallback)
+# ---------------------------------------------------------------------------
+
+# Standard aging ladder, matching the column titles QBO uses on the summary
+# report so a derived frame renders identically to a parsed one. Each entry is
+# (label, inclusive upper bound in days overdue); the final bucket is open-ended.
+_DERIVED_LADDER: tuple[tuple[str, int | None], ...] = (
+    ("Current",      0),
+    ("1 - 30",       30),
+    ("31 - 60",      60),
+    ("61 - 90",      90),
+    ("91 and over",  None),
+)
+
+DERIVED_BUCKET_ORDER = [label for label, _ in _DERIVED_LADDER]
+
+
+def bucket_for_days(days_overdue) -> str:
+    """The aging bucket a document falls in, given how many days past due it is.
+
+    Anything not yet due (zero or negative days overdue) is Current, matching
+    QBO's own convention. A document with no resolvable due *or* transaction date
+    has no measurable age, so it is treated as Current rather than silently aged
+    into the oldest bucket, which would overstate risk.
+
+    Missing ages arrive two ways and both mean the same thing: ``None`` from the
+    detail parser, and ``NaN`` once that column has been through a DataFrame,
+    where pandas coerces None in a numeric column. NaN fails every comparison
+    silently, so testing for it explicitly is what keeps an undated document out
+    of the 91-and-over bucket.
+    """
+    if days_overdue is None or pd.isna(days_overdue) or days_overdue <= 0:
+        return "Current"
+    for label, upper in _DERIVED_LADDER:
+        if upper is not None and upper > 0 and days_overdue <= upper:
+            return label
+    return _DERIVED_LADDER[-1][0]
+
+
+def derive_buckets_from_detail(detail_df: pd.DataFrame) -> pd.DataFrame:
+    """Rebuild a (party, bucket, amount) frame from the open-document detail.
+
+    The summary and detail endpoints describe the same receivables: the summary
+    pre-buckets them, the detail lists each open document with its due date. When
+    the summary comes back unusable, the detail carries everything needed to
+    reconstruct it, so the report need not be lost.
+
+    Returns an empty frame with the right columns when there is no detail, so the
+    caller can treat "nothing to derive" and "derived nothing" the same way.
+    """
+    cols = ["party", "bucket", "amount"]
+    if detail_df is None or detail_df.empty:
+        out = pd.DataFrame(columns=cols)
+        out.attrs["bucket_order"] = list(DERIVED_BUCKET_ORDER)
+        return out
+
+    rows = [
+        (r["party"], bucket_for_days(r["days_overdue"]), float(r["open_balance"]))
+        for _, r in detail_df.iterrows()
+    ]
+    out = pd.DataFrame(rows, columns=cols)
+    out = out.groupby(["party", "bucket"], as_index=False)["amount"].sum()
+    # Keep the full ladder in the order QBO would have used, so an empty bucket
+    # still renders as a zero row rather than vanishing from the chart.
+    out.attrs["bucket_order"] = list(DERIVED_BUCKET_ORDER)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Raw fetch
 # ---------------------------------------------------------------------------
 
