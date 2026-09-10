@@ -67,3 +67,14 @@ The missed September 1 reports were sent manually on 2026-09-09 once the retry
 was deployed.
 
 ---
+
+## 2026-09-10 04:09 UTC — run `9e5f72a6` (production, dry run) — 1 incident, 1 self-healed
+
+### `self_heal` · A/R Aging
+
+- **What happened:** The A/R aging summary endpoint returned 0.00 while the Balance Sheet showed 50.00 for the same date.
+- **Why:** The aging summary endpoint returned a total that disagrees with the Balance Sheet's own A/R or A/P line for the same date. The Balance Sheet is the ledger of record, so the summary is the side that is wrong — usually because the summary report returned no per-party rows at all, not because it returned wrong amounts.
+- **What the system did:** Rebuilt the aging buckets from the per-document detail report, which the Balance Sheet independently corroborates, then re-ran the same reconciliation against the Balance Sheet before sending. The report was delivered rather than held.
+- **Outcome:** Resolved automatically. No action needed.
+
+---
