@@ -146,6 +146,11 @@ def pipe():
             "vbdf":   p("vendor_fetcher.build_vendor_dataframe", return_value=vendor_df),
             "send":   p("mailer.send_report"),
             "alert":  p("mailer.send_failure_alert", return_value=True),
+            # Alerting is healthy by default. Without this the check reads ambient
+            # SMTP env vars, so the suite passed on a developer machine with a
+            # populated .env and failed in CI, which has none — the RB-5 guard
+            # fired and every "clean run" assertion saw a /fail heartbeat.
+            "alertcfg": p("mailer.alerting_configured", return_value=True),
         }
         p("auth.github_pat_expiry", return_value=None)  # PAT check no-ops
         m["dt"].now.return_value = datetime(2026, 6, 16, 12, 0, 0)  # the 16th; May complete
@@ -268,6 +273,19 @@ class TestGuardrails:
             scheduler.run(force=True)
         hb.assert_called_once()
         assert hb.call_args.args[0] == "https://hc.example/abc"        # base = success
+
+    def test_heartbeat_fail_when_the_alert_channel_is_down(self, pipe):
+        """RB-5: losing the SMTP credentials must not fail silently.
+
+        Reports still send, but every failure/hold alert would no-op, so the loss
+        of the safety net is routed to the SMTP-independent heartbeat instead.
+        """
+        pipe["alertcfg"].return_value = False
+        with patch.dict("os.environ", {"HEARTBEAT_URL": "https://hc.example/abc"}, clear=False), \
+             patch("requests.get") as hb:
+            scheduler.run(force=True)
+        pipe["send"].assert_called()                                   # reports still go out
+        assert hb.call_args.args[0] == "https://hc.example/abc/fail"
 
     def test_heartbeat_fail_on_hold(self, pipe):
         pipe["bdf"].side_effect = _bad_cogs_df(300000.0)
