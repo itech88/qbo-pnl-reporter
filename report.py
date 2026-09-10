@@ -20,7 +20,25 @@ import pandas as pd
 from jinja2 import Environment, FileSystemLoader
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
-_CURRENT_YEAR = datetime.now().year
+
+
+def _reporting_year(mom_df: pd.DataFrame | None = None,
+                    yoy_df: pd.DataFrame | None = None) -> int:
+    """The year a report headlines — the reporting year chosen by analytics (the
+    latest month with income), read from the data instead of the wall clock.
+
+    A calendar year frozen at import mislabels the January-1 December-close chart,
+    the month-by-month header, and the highlighted year-over-year column (RB-1).
+    Prefer the ``year`` column analytics stamps on the month-by-month frame; fall
+    back to the latest year in the YoY columns, then the current calendar year."""
+    if mom_df is not None and not mom_df.empty and "year" in mom_df.columns:
+        return int(mom_df["year"].max())
+    if yoy_df is not None and not yoy_df.empty:
+        years = [int(c.rsplit("_", 1)[-1]) for c in yoy_df.columns
+                 if c.startswith("value_") and c.rsplit("_", 1)[-1].isdigit()]
+        if years:
+            return max(years)
+    return datetime.now().year
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +82,8 @@ def _build_chart(
     plot_col   = "value_pct" if use_pct else "value"
     y_label    = f"{label} % of Income" if use_pct else f"{label} ($)"
 
+    current_year = _reporting_year(mom_df, yoy_df)
+
     active  = mom_df[mom_df["income"] > 0].copy()
     months  = active["month"].tolist()
     labels  = active["month_name"].tolist()
@@ -74,26 +94,23 @@ def _build_chart(
     ax.set_facecolor("#f8f9fa")
 
     bars = ax.bar(months, bar_vals, color="#2563eb", alpha=0.85,
-                  label=str(_CURRENT_YEAR), zorder=3, width=0.6)
+                  label=str(current_year), zorder=3, width=0.6)
 
     # Colour negative bars differently
     for bar, val in zip(bars, bar_vals):
         if val < 0:
             bar.set_color("#dc2626")
 
-    # Prior-year lines
+    # Prior-year comparison lines: every year present in the YoY frame except the
+    # reporting year, in order. The isdigit() guard keeps the value_/value_pct_
+    # prefixes from cross-matching (value_ would otherwise catch value_pct_YYYY).
+    prefix = "value_pct_" if use_pct else "value_"
     prior_years = sorted(
-        c.replace("value_pct_", "").replace("value_", "")
-        for c in yoy_df.columns
-        if (c.startswith("value_pct_") if use_pct else c.startswith("value_"))
-        and not c.endswith(str(_CURRENT_YEAR))
-        and "_pct_" not in c.replace("value_pct_", "X")  # avoid double-match
-    )
-    # Cleaner: just derive prior years from yoy_df columns
-    yr_cols = [c for c in yoy_df.columns if c.startswith("value_pct_" if use_pct else "value_")
-               and not c.startswith("value_pct_" if not use_pct else "X")]
-    prior_years = sorted(
-        c.split("_")[-1] for c in yr_cols if c.split("_")[-1] != str(_CURRENT_YEAR)
+        col[len(prefix):]
+        for col in yoy_df.columns
+        if col.startswith(prefix)
+        and col[len(prefix):].isdigit()
+        and col[len(prefix):] != str(current_year)
     )
 
     palette = ["#94a3b8", "#64748b"]
@@ -123,7 +140,7 @@ def _build_chart(
     ax.tick_params(axis="y", labelsize=9)
     ax.set_ylabel(y_label, fontsize=9)
     ax.set_title(
-        f"{label} — {_CURRENT_YEAR} vs Prior Years",
+        f"{label} — {current_year} vs Prior Years",
         fontsize=11, fontweight="bold", pad=12,
     )
     ax.legend(fontsize=8, framealpha=0.7)
@@ -234,16 +251,20 @@ def build_report(
 
     chart_png = _build_chart(mom_df, yoy_df, report_config)
 
+    reporting_year = _reporting_year(mom_df, yoy_df)
+
     # Partial = the latest month with income is the current calendar month, i.e.
-    # the figures are month-to-date and will change as the month completes.
+    # the figures are month-to-date and will change as the month completes. Guard
+    # on the year too, so a completed December is never flagged partial on Jan 1.
     now = datetime.now()
     _active = mom_df[mom_df["income"] > 0]
     _report_month = int(_active["month"].max()) if not _active.empty else None
-    partial = _report_month is not None and _report_month == now.month
+    partial = (_report_month is not None
+               and _report_month == now.month and reporting_year == now.year)
 
     context = {
         "report_name":   report_config["name"],
-        "current_year":  _CURRENT_YEAR,
+        "current_year":  reporting_year,
         "report_date":   datetime.now().strftime("%B %d, %Y"),
         "partial":       partial,
         "partial_month": now.strftime("%B %Y"),
@@ -332,6 +353,9 @@ def build_vendor_report(
 
     now = datetime.now()
     partial = breakdown["year"] == now.year and breakdown["month"] == now.month
+    # Highlight the reporting year (the pinned/period year), not a frozen calendar
+    # year — otherwise the Jan-1 December view highlights the wrong column.
+    current_year = breakdown["year"] or (report_period[0] if report_period else now.year)
 
     chart_png = _vendor_chart(matrix, report_config["name"])
 
@@ -357,7 +381,7 @@ def build_vendor_report(
     context = {
         "report_name":    report_config["name"],
         "report_date":    datetime.now().strftime("%B %d, %Y"),
-        "current_year":   _CURRENT_YEAR,
+        "current_year":   current_year,
         "partial":        partial,
         "partial_month":  now.strftime("%B %Y"),
         "period_label":   f"{breakdown['month_name']} {breakdown['year']}" if breakdown["year"] else "—",
@@ -414,14 +438,20 @@ def _scorecard_chart(metrics: list[dict]) -> bytes:
 def build_scorecard(
     metrics: list[dict],
     scorecard_config: dict,
+    threshold: float | None = None,
 ) -> tuple[str, bytes]:
     """
     Render the monthly business dashboard scorecard.
 
     Each item in `metrics` is the output of analytics.current_month_stats()
     augmented with 'name' and 'higher_is_better' from the report config.
+
+    `threshold` defaults to the shared analytics.variance_threshold() accessor, so
+    the scorecard's status bands and the anomaly flags always agree on one value.
     """
-    threshold = float(os.getenv("COGS_VARIANCE_THRESHOLD", "0.05"))
+    if threshold is None:
+        from analytics import variance_threshold
+        threshold = variance_threshold()
 
     for m in metrics:
         dev = m.get("deviation")
@@ -458,18 +488,24 @@ def build_scorecard(
 
     chart_png = _scorecard_chart(metrics)
 
-    # Derive the reported month from the first metric that has data
+    # Derive the reported month/year from the first metric that has data, so the
+    # dashboard headline tracks the reporting period (December on Jan 1), not the
+    # calendar clock.
     now = datetime.now()
     report_month_name = next(
         (m.get("report_month_name", "") for m in metrics if m.get("report_month_name")),
         now.strftime("%B"),
     )
+    current_year = next(
+        (m.get("report_year") for m in metrics if m.get("report_year")),
+        now.year,
+    )
     _rm = next((m.get("report_month") for m in metrics if m.get("report_month")), None)
-    partial = _rm is not None and _rm == now.month
+    partial = _rm is not None and _rm == now.month and current_year == now.year
 
     context = {
         "report_date":       now.strftime("%B %d, %Y"),
-        "current_year":      _CURRENT_YEAR,
+        "current_year":      current_year,
         "report_month_name": report_month_name,
         "partial":           partial,
         "partial_month":     now.strftime("%B %Y"),

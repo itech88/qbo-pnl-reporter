@@ -18,6 +18,8 @@ from email.mime.text import MIMEText
 
 from dotenv import load_dotenv
 
+from env import env_int, env_str
+
 load_dotenv()
 
 
@@ -49,7 +51,7 @@ def _build_mime(subject: str, html: str, chart_png: bytes, email_to: str) -> MIM
 
 def _send_smtp(subject: str, html: str, chart_png: bytes, email_to: str) -> None:
     host     = os.environ["SMTP_HOST"]
-    port     = int(os.getenv("SMTP_PORT", "587"))
+    port     = env_int("SMTP_PORT", 587)
     user     = os.environ["SMTP_USER"]
     password = os.environ["SMTP_PASSWORD"]
 
@@ -141,7 +143,9 @@ def send_report(
     Provider is selected by EMAIL_PROVIDER in .env (smtp | sendgrid | ses).
     email_to overrides EMAIL_TO in .env — used for per-report recipients.
     """
-    provider = os.getenv("EMAIL_PROVIDER", "smtp").lower().strip()
+    # env_str, not os.getenv: CI passes an unset EMAIL_PROVIDER through as "",
+    # which would sail past a getenv default and fail as "Unknown EMAIL_PROVIDER ''".
+    provider = env_str("EMAIL_PROVIDER", "smtp").lower().strip()
     if provider not in _BACKENDS:
         raise ValueError(
             f"Unknown EMAIL_PROVIDER '{provider}'. Choose from: {', '.join(_BACKENDS)}"
@@ -152,18 +156,39 @@ def send_report(
     _BACKENDS[provider](subject, html, chart_png, email_to)
 
 
+# Operator alerts go over SMTP regardless of EMAIL_PROVIDER — deliberately
+# decoupled from the report channel so a SendGrid/SES outage can still be
+# reported. The trade-off: these SMTP credentials are MANDATORY even when reports
+# are delivered by another provider. Drop them and every alert silently no-ops —
+# the scheduler guards against that at startup (RB-5) via alerting_configured().
+_ALERT_REQUIRED = ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM")
+
+
+def alerting_configured() -> bool:
+    """True when the SMTP credentials operator alerts require are all present.
+
+    Alerts (failures, guardrail holds, PAT expiry) are SMTP-only and independent
+    of EMAIL_PROVIDER, so SMTP creds must stay set even if reports move to
+    SendGrid/SES. When they are missing this returns False and the scheduler routes
+    the failure to the SMTP-independent heartbeat, so the loss of the safety net is
+    itself visible instead of silently swallowed."""
+    return all(os.getenv(k) for k in _ALERT_REQUIRED)
+
+
 def send_failure_alert(subject: str, body: str, email_to: str | None = None) -> bool:
     """
     Send a short plain-text operator alert via SMTP. Best-effort: returns True on
     success, False on any failure, and never raises — alerting must not crash the
     caller. No-op (returns False) if SMTP credentials are not configured.
 
+    Alerts are SMTP-only regardless of EMAIL_PROVIDER (see alerting_configured):
+    keep SMTP credentials set even when reports use another provider.
+
     Recipient precedence: explicit email_to → ALERT_EMAIL (the operator/developer)
     → EMAIL_FROM (the sending account). EMAIL_TO is deliberately NOT used: it is the
     business owner's report address, and operational alerts must never reach them.
     """
-    required = ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM")
-    if any(not os.getenv(k) for k in required):
+    if not alerting_configured():
         return False
 
     recipient = email_to or os.getenv("ALERT_EMAIL") or os.environ["EMAIL_FROM"]
@@ -174,7 +199,7 @@ def send_failure_alert(subject: str, body: str, email_to: str | None = None) -> 
 
     try:
         host = os.environ["SMTP_HOST"]
-        port = int(os.getenv("SMTP_PORT", "587"))
+        port = env_int("SMTP_PORT", 587)
         with smtplib.SMTP(host, port, timeout=30) as server:
             server.ehlo()
             server.starttls(context=ssl.create_default_context())

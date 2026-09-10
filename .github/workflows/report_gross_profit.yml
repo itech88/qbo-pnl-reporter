@@ -8,6 +8,14 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  # Serialize every QBO-token-refreshing workflow onto one shared queue so no two
+  # runs rotate the refresh token concurrently — a concurrent rotation strands the
+  # whole token chain on invalid_grant and forces a full QBO re-bootstrap. Runs
+  # queue instead of cancelling: each must finish its own token writeback.
+  group: qbo-token-chain
+  cancel-in-progress: false
+
 jobs:
   run-report:
     runs-on: ubuntu-latest

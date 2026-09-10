@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 import yaml
 
+from env import env_int
 from logger import get_logger
 
 log = get_logger(__name__)
@@ -84,17 +85,27 @@ def _deliver(html: str, chart_png: bytes, subject: str, cfg: dict,
 
 
 def _reporting_period(collected: dict[str, tuple]) -> tuple[int, int] | None:
-    """(year, month) of the latest current-year month with income, across the
-    collected reports — the headline period guardrails reconcile. None if no data."""
-    current_year = datetime.now().year
+    """(year, month) of the latest month with income across the collected reports —
+    the headline period guardrails reconcile. The year is the latest year that has
+    income (the reporting year), not the calendar year: on Jan 1 the December close
+    must still be reconciled, not skipped (RB-1, mirroring analytics._reporting_year).
+    None when no report has any income."""
+    reporting_year = None
+    for value in collected.values():
+        wi = value[0][value[0]["income"] > 0]
+        if not wi.empty:
+            y = int(wi["year"].max())
+            reporting_year = y if reporting_year is None else max(reporting_year, y)
+    if reporting_year is None:
+        return None
     latest = None
     for value in collected.values():
         df = value[0]
-        active = df[(df["year"] == current_year) & (df["income"] > 0)]
+        active = df[(df["year"] == reporting_year) & (df["income"] > 0)]
         if not active.empty:
             m = int(active["month"].max())
             latest = m if latest is None else max(latest, m)
-    return (current_year, latest) if latest is not None else None
+    return (reporting_year, latest) if latest is not None else None
 
 
 def _trailing_daily(series, months: int = 3) -> float | None:
@@ -112,24 +123,32 @@ def _trailing_daily(series, months: int = 3) -> float | None:
 
 
 def _trailing_daily_income(collected: dict[str, tuple]) -> float | None:
-    """Daily revenue rate from any collected report's shared income column (for DSO)."""
-    current_year = datetime.now().year
+    """Daily revenue rate from any collected report's shared income column (for DSO).
+    Keys on the reporting year (latest year with income) so DSO still computes on Jan 1."""
     for value in collected.values():
         df = value[0]
-        cur = df[(df["year"] == current_year) & (df["income"] > 0)].sort_values("month")
+        wi = df[df["income"] > 0]
+        if wi.empty:
+            continue
+        ry  = int(wi["year"].max())
+        cur = df[(df["year"] == ry) & (df["income"] > 0)].sort_values("month")
         if not cur.empty:
             return _trailing_daily(cur["income"].tolist())
     return None
 
 
 def _trailing_daily_cogs(collected: dict[str, tuple]) -> float | None:
-    """Daily spend rate from the COGS report's value column (for DPO). None if absent."""
-    current_year = datetime.now().year
+    """Daily spend rate from the COGS report's value column (for DPO). None if absent.
+    Keys on the reporting year (latest year with COGS spend) so DPO computes on Jan 1."""
     cogs = collected.get("COGS")
     if not cogs:
         return None
-    df  = cogs[0]
-    cur = df[(df["year"] == current_year) & (df["value"] > 0)].sort_values("month")
+    df    = cogs[0]
+    spent = df[df["value"] > 0]
+    if spent.empty:
+        return None
+    ry  = int(spent["year"].max())
+    cur = df[(df["year"] == ry) & (df["value"] > 0)].sort_values("month")
     return _trailing_daily(cur["value"].tolist()) if not cur.empty else None
 
 
@@ -152,6 +171,11 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
     run_id     = str(uuid.uuid4())[:8]
     started_at = time.monotonic()
     env        = os.getenv("QBO_ENVIRONMENT", "sandbox")
+
+    # Start each run with a clean token-writeback state; a failed writeback during
+    # this run (CI only) is recorded in auth and fails the run at the end (SEC-2).
+    from auth import reset_writeback_state
+    reset_writeback_state()
 
     log.info("━" * 60)
     log.info("EXECUTION START — run_id=%s env=%s dry_run=%s pid=%d",
@@ -205,7 +229,7 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
              len(send_outlook), len(send_score))
 
     # ── Step 1+2: Fetch P&L once and build analytics (skip if nothing needs it)
-    from analytics import run_all, current_month_stats
+    from analytics import run_all, current_month_stats, variance_threshold
     from report import build_report, build_scorecard
 
     collected: dict[str, tuple] = {}   # name -> (df, mom, yoy, flags)
@@ -438,7 +462,7 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
     for sc_cfg in send_score:
         try:
             log.info("[%s] ── Scorecard: %s ──", run_id, sc_cfg["name"])
-            threshold = float(os.getenv("COGS_VARIANCE_THRESHOLD", "0.05"))
+            threshold = variance_threshold()
             metrics_data = []
             for metric_name in sc_cfg.get("includes", []):
                 if metric_name in held:
@@ -462,7 +486,9 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
                 log.warning("[%s]   Scorecard has no metric data — skipping.", run_id)
                 continue
 
-            html, chart_png = build_scorecard(metrics_data, sc_cfg)
+            # Pass the threshold the metrics were scored against, so the scorecard's
+            # status bands and the anomaly flags can't drift apart (CQ-6).
+            html, chart_png = build_scorecard(metrics_data, sc_cfg, threshold=threshold)
             log.info("[%s]   Scorecard HTML=%d chars  chart=%d bytes", run_id, len(html), len(chart_png))
             subject = sc_cfg["subject"].format(month=today.strftime("%B"), year=today.year)
             _deliver(html, chart_png, subject, sc_cfg, dry_run, run_id)
@@ -482,23 +508,63 @@ def run(force: bool = False, dry_run: bool = False, report_filter: str | None = 
              run_id, total_reports, len(held_names), failures, total_anomalies, elapsed, not dry_run)
     log.info("━" * 60)
 
+    # A CI token writeback that failed this run means the rotated refresh token
+    # never reached GitHub Secrets — the next run would hit invalid_grant. None on
+    # local runs and clean CI runs.
+    from auth import writeback_failed
+    wb_error = writeback_failed()
+
+    # RB-5: operator alerts are SMTP-only and independent of EMAIL_PROVIDER. If
+    # those credentials were dropped (e.g. after moving reports to SendGrid/SES),
+    # every failure/hold/PAT alert would silently no-op — the safety net vanishing
+    # exactly when the config changed. Surface it through the SMTP-independent
+    # heartbeat so an external monitor still catches it.
+    from mailer import alerting_configured
+    alerts_down = not dry_run and not alerting_configured()
+    if alerts_down:
+        log.error("[%s] ALERTING CHANNEL DOWN — SMTP credentials for operator alerts "
+                  "are not configured; failure/hold/PAT alerts would silently no-op. "
+                  "Reports still send. Pinging heartbeat /fail so the dead-man's-switch "
+                  "surfaces this (RB-5).", run_id)
+
     if not dry_run:
         _check_pat_expiry(run_id)
-        # Dead-man's-switch: a clean run pings OK; any held/failed report pings /fail.
-        _ping_heartbeat(run_id, success=not (failures or held_names))
+        # Dead-man's-switch: a clean run pings OK; a held/failed report, a failed
+        # token writeback, or a down alert channel pings /fail.
+        _ping_heartbeat(run_id,
+                        success=not (failures or held_names or wb_error or alerts_down))
 
     if held_names:
         log.error("[%s] %d report(s) HELD by guardrails (not delivered): %s",
                   run_id, len(held_names), ", ".join(held_names))
     if failures:
         log.error("[%s] %d report(s) FAILED — see errors above.", run_id, failures)
+    if wb_error:
+        log.error("[%s] TOKEN WRITEBACK FAILED — the rotated QBO refresh token was not "
+                  "persisted to GitHub Secrets; the next run will fail with invalid_grant "
+                  "until this is fixed. Reason: %s", run_id, wb_error)
 
     if (failures or held_names) and not dry_run:
         _alert_problems(today, env, run_id, failed_names, held)
+    if wb_error and not dry_run:
+        _alert_failure(
+            "⚠️ QBO token writeback FAILED — fix before the next run",
+            "The QBO refresh token was rotated on this run but could NOT be written back "
+            "to GitHub Secrets. Reports already went out, but the NEXT scheduled run will "
+            "fail with invalid_grant — and require a full QBO re-consent — unless this is "
+            "fixed first.\n\n"
+            f"Reason: {wb_error}\n\n"
+            "Most likely the GH_PAT expired or lost Secrets:write. Rotate/repair the PAT, "
+            "then trigger any report manually and confirm the logs show "
+            "'Rotated tokens persisted to GitHub Secrets'.\n\n"
+            f"Run id: {run_id}\nEnvironment: {env}",
+        )
 
     # Holds fail a live run (so the issue is visible) but never a dry run, which is
-    # only validating; an outright failure exits non-zero in either mode.
-    if failures or (held_names and not dry_run):
+    # only validating. An outright failure or a failed token writeback exits non-zero
+    # in either mode — a stale refresh token is dangerous even after a dry run, which
+    # still rotates the token in CI.
+    if failures or wb_error or (held_names and not dry_run):
         sys.exit(1)
 
 
@@ -520,7 +586,7 @@ def _check_pat_expiry(run_id: str) -> None:
         if expiry is None:
             return  # no PAT (local), unreachable, or non-expiring — nothing to warn
 
-        warn_days = int(os.getenv("GH_PAT_EXPIRY_WARN_DAYS", "30"))
+        warn_days = env_int("GH_PAT_EXPIRY_WARN_DAYS", 30)
         days_left = (expiry - datetime.now(timezone.utc)).days
 
         if days_left > warn_days:

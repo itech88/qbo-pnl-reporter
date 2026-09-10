@@ -22,9 +22,10 @@ Report-name constants match the `name` field in reports/*.yaml.
 """
 
 import math
-import os
 
 import pandas as pd
+
+from env import env_float
 
 # Report names that participate in reconciliation (must match reports/*.yaml).
 INCOME       = "income"   # not a report — the shared income base in each DataFrame
@@ -39,9 +40,10 @@ def tolerance() -> float:
     """Absolute dollar tolerance for reconciliation, configurable via env.
 
     Tolerant of an unset *or empty* RECON_TOLERANCE (CI passes secrets through as
-    empty strings when they don't exist), falling back to $1.00.
+    empty strings when they don't exist), falling back to $1.00. This was the
+    original home of the `or`-default idiom now shared via env.env_float (RB-3).
     """
-    return float(os.getenv("RECON_TOLERANCE") or "1.00")
+    return env_float("RECON_TOLERANCE", 1.00)
 
 
 # ---------------------------------------------------------------------------
